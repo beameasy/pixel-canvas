@@ -5,10 +5,12 @@ interface CoordinatesDisplayProps {
   y: number;
 }
 
-export default function CoordinatesDisplay({ x, y }: CoordinatesDisplayProps) {
+const CoordinatesDisplay = ({ x, y }: CoordinatesDisplayProps) => {
   return (
-    <div className="fixed bottom-4 right-4 bg-black/75 text-white px-4 py-2 rounded-full">
+    <div style={{ color: '#FFD700' }} className="font-mono">
       ({x}, {y})
     </div>
   );
-} 
+};
+
+export default CoordinatesDisplay; 

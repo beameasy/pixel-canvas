@@ -1,10 +1,23 @@
-export async function getFarcasterUser(walletAddress: string) {
+export async function getFarcasterUser(address: string) {
   try {
-    const response = await fetch(`/api/farcaster?address=${walletAddress}`);
+    if (!address) throw new Error('Address is required');
+
+    const response = await fetch(`/api/farcaster?address=${encodeURIComponent(address)}`);
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
     const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to fetch Farcaster user');
+    }
+
     return data;
   } catch (error) {
     console.error('Error fetching Farcaster user:', error);
-    return null;
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
   }
 } 

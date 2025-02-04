@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@neynar/nodejs-sdk": "^2.9.0",
     "@privy-io/react-auth": "^2.2.1",
     "@supabase/supabase-js": "^2.48.1",
     "next": "15.1.6",

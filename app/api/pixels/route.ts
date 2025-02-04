@@ -1,9 +1,16 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabaseClient';
+import { createClient } from '@supabase/supabase-js';
+
+export const runtime = 'edge';
 
 const COOLDOWN_PERIOD = 60; // seconds
 
 export async function POST(request: Request) {
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
   const { x, y, color, wallet_address } = await request.json();
   
   // Check cooldown

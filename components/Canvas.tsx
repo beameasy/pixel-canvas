@@ -1,16 +1,20 @@
 'use client';
 
-import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from 'react';
+import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { usePrivy, useWallets } from '@privy-io/react-auth';
+import { useFarcasterUser } from '@/lib/hooks/useFarcasterUser';
 import MiniMap from './MiniMap';
 import ColorPalette from './ColorPalette';
 import CoordinatesDisplay from './CoordinatesDisplay';
+import SideColorPicker from './SideColorPicker';
 
 // Constants
 const CANVAS_SIZE = 600;      // Canvas display size
 const GRID_SIZE = 200;        // Number of pixels in grid
 const PIXEL_SIZE = 3;         // Base size of each pixel (3px)
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 20;
 
 interface ViewState {
   x: number;
@@ -21,18 +25,22 @@ interface ViewState {
 interface CanvasProps {
   selectedColor: string;
   onColorSelect: (color: string) => void;
+  authenticated: boolean;
+  onAuthError: () => void;
+  onMousePosChange: (x: number, y: number) => void;
   ref?: React.ForwardedRef<{
     resetView: () => void;
     clearCanvas: () => void;
   }>;
 }
 
-const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, CanvasProps>(({ selectedColor, onColorSelect }, ref) => {
+const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { authenticated } = usePrivy();
+  const { user } = usePrivy();
   const { wallets } = useWallets();
   const activeWallet = wallets?.[0];
   const address = activeWallet?.address;
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // State
   const [pixels, setPixels] = useState<Map<string, string>>(new Map());
@@ -46,6 +54,10 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
   const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
   const [mousePos, setMousePos] = useState({ x: -1, y: -1 });
   const [previewPixel, setPreviewPixel] = useState({ x: -1, y: -1 });
+  const [flashMessage, setFlashMessage] = useState<string | null>(null);
+
+  // Use your existing Farcaster hook
+  const { farcasterUser } = useFarcasterUser(address);
 
   // Initialize canvas and load pixels
   useEffect(() => {
@@ -79,10 +91,46 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       )
       .subscribe();
 
+    // Add event listener with { passive: false }
+    const handleWheelEvent = (e: WheelEvent) => {
+      e.preventDefault();
+      const isZooming = e.ctrlKey || e.metaKey || e.deltaMode === WheelEvent.DOM_DELTA_PIXEL;
+      
+      if (isZooming) {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = (e.clientX - rect.left);
+        const mouseY = (e.clientY - rect.top);
+
+        const zoomAmount = e.deltaY * -0.005;
+        
+        setView(prev => {
+          const newScale = Math.min(Math.max(prev.scale * (1 + zoomAmount), MIN_ZOOM), MAX_ZOOM);
+          const scaleFactor = newScale / prev.scale;
+          
+          const newX = mouseX - (mouseX - prev.x) * scaleFactor;
+          const newY = mouseY - (mouseY - prev.y) * scaleFactor;
+          
+          return {
+            scale: newScale,
+            x: newX,
+            y: newY
+          };
+        });
+      } else if (!isDragging) {
+        setView(prev => ({
+          ...prev,
+          y: prev.y - e.deltaY
+        }));
+      }
+    };
+
+    canvas.addEventListener('wheel', handleWheelEvent, { passive: false });
+
     return () => {
       subscription.unsubscribe();
+      canvas.removeEventListener('wheel', handleWheelEvent);
     };
-  }, []);
+  }, [isDragging]);
 
   // Load existing pixels
   const loadPixels = async () => {
@@ -110,36 +158,6 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     resetView,
     clearCanvas: () => setPixels(new Map())
   }));
-
-  // Handle mouse wheel zoom
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
-
-    // Calculate mouse position relative to canvas
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-
-    // Calculate zoom
-    const delta = -Math.sign(e.deltaY);
-    const scaleFactor = 0.1;
-    const newScale = view.scale * (1 + delta * scaleFactor);
-
-    // Limit zoom range
-    if (newScale < 0.5 || newScale > 20) return;
-
-    // Calculate new position to zoom towards mouse
-    const newX = mouseX - (mouseX - view.x) * newScale / view.scale;
-    const newY = mouseY - (mouseY - view.y) * newScale / view.scale;
-
-    setView({
-      x: newX,
-      y: newY,
-      scale: newScale
-    });
-  };
 
   // Handle mouse down for dragging
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -179,6 +197,9 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
         y: e.clientY - dragStart.y
       });
     }
+
+    // Update mouse position through callback
+    onMousePosChange(x, y);
   };
 
   // Handle mouse up and pixel placement
@@ -194,6 +215,11 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
 
     // Only place pixel if we haven't moved (i.e., it was a click)
     if (!hasMoved && address) {
+      if (!authenticated) {
+        setFlashMessage('Please connect your wallet to place pixels');
+        return;
+      }
+
       const rect = canvasRef.current?.getBoundingClientRect();
       if (!rect) return;
 
@@ -204,7 +230,8 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return;
 
       try {
-        const { error } = await supabase
+        // Place pixel
+        const { error: pixelError } = await supabase
           .from('pixels')
           .upsert({
             x,
@@ -213,21 +240,34 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
             placed_by: address
           });
 
-        if (error) throw error;
+        if (pixelError) throw pixelError;
 
         // Update local state
         setPixels(prev => new Map(prev).set(`${x},${y}`, selectedColor));
 
-        // Create terminal message
-        await supabase
+        // Create terminal message with Farcaster data
+        console.log('Current farcasterUser:', farcasterUser); // Debug log
+        
+        const { error: messageError, data: messageData } = await supabase
           .from('terminal_messages')
           .insert({
             message: `placed a ${selectedColor} pixel at (${x}, ${y})`,
             wallet_address: address,
-            message_type: 'pixel_placed'
-          });
+            message_type: 'pixel_placed',
+            farcaster_username: farcasterUser?.username || null,
+            farcaster_pfp: farcasterUser?.pfpUrl || null
+          })
+          .select()
+          .single();
+
+        if (messageError) {
+          console.error('Error creating terminal message:', messageError);
+          throw messageError;
+        }
+
+        console.log('Terminal message created:', messageData);
       } catch (error) {
-        console.error('Error placing pixel:', error);
+        console.error('Error placing pixel:', error, 'farcasterUser:', farcasterUser);
       }
     }
   };
@@ -324,54 +364,110 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     );
   }, [view, pixels, previewPixel, selectedColor, isDragging]);
 
-  return (
-    <div className="relative flex flex-col items-center gap-4">
-      <div className="flex items-center gap-4 mb-4">
-        <ColorPalette 
-          selectedColor={selectedColor}
-          onColorSelect={onColorSelect}
-        />
-        <button
-          onClick={resetView}
-          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
-        >
-          Reset View
-        </button>
-      </div>
+  // Add this to debug what data we have available
+  useEffect(() => {
+    console.log('Privy user:', user);
+  }, [user]);
 
-      <div className="relative w-[600px] h-[600px] bg-gray-800 rounded-lg overflow-hidden">
-        <canvas
-          ref={canvasRef}
-          onWheel={handleWheel}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseLeave}
-          onContextMenu={(e) => e.preventDefault()}
-          className="absolute top-0 left-0"
-          style={{
-            cursor: isDragging ? 'grabbing' : 'default'
-          }}
-        />
-        
-        <div className="absolute bottom-4 right-4">
-          <MiniMap
-            width={CANVAS_SIZE}
-            height={CANVAS_SIZE}
-            viewportWidth={CANVAS_SIZE}
-            viewportHeight={CANVAS_SIZE}
-            panPosition={{ x: view.x, y: view.y }}
-            zoom={view.scale}
-            pixels={pixels}
-            gridSize={GRID_SIZE}
+  const handleCanvasClick = async (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!authenticated) {
+      onAuthError();
+      return;
+    }
+
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const x = Math.floor((event.clientX - rect.left) * (600 / rect.width));
+    const y = Math.floor((event.clientY - rect.top) * (600 / rect.height));
+    
+    // Update the pixel in the pixels state
+    setPixels(prevPixels => {
+      const newPixels = new Map(prevPixels);
+      newPixels.set(`${x},${y}`, selectedColor);
+      return newPixels;
+    });
+
+    // If you have a backend API call, you can add it here
+    try {
+      // Example API call:
+      // await fetch('/api/pixels', {
+      //   method: 'POST',
+      //   body: JSON.stringify({ x, y, color: selectedColor }),
+      // });
+    } catch (error) {
+      console.error('Failed to place pixel:', error);
+    }
+
+    // Trigger a redraw
+    const ctx = canvasRef.current?.getContext('2d');
+    if (ctx) {
+      drawPixel(ctx, x, y, selectedColor);
+    }
+  };
+
+  // Helper function to draw a single pixel
+  const drawPixel = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, 1, 1);
+  };
+
+  // Add useEffect to auto-clear flash message
+  useEffect(() => {
+    if (flashMessage) {
+      const timer = setTimeout(() => setFlashMessage(null), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [flashMessage]);
+
+  return (
+    <div 
+      ref={containerRef}
+      className="relative w-full h-full"
+      style={{ 
+        touchAction: 'none',
+        overflow: 'hidden'
+      }}
+    >
+      {/* Add Color Picker above canvas */}
+      <div className="absolute top-[-60px] left-0 right-0 w-full">
+        <div className="bg-neutral-900 p-2 rounded-lg w-full">
+          <SideColorPicker
+            selectedColor={selectedColor}
+            onColorSelect={onColorSelect}
           />
         </div>
       </div>
 
-      {mousePos.x >= 0 && mousePos.x < GRID_SIZE && 
-       mousePos.y >= 0 && mousePos.y < GRID_SIZE && (
-        <CoordinatesDisplay x={mousePos.x} y={mousePos.y} />
-      )}
+      <canvas
+        ref={canvasRef}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+        onContextMenu={(e) => e.preventDefault()}
+        onClick={handleCanvasClick}
+        className="absolute top-0 left-0 w-full h-full"
+        style={{
+          cursor: isDragging ? 'grabbing' : 'default'
+        }}
+        width={CANVAS_SIZE}
+        height={CANVAS_SIZE}
+      />
+      
+      {/* MiniMap overlay */}
+      <div className="absolute bottom-2 right-2">
+        <MiniMap
+          width={CANVAS_SIZE}
+          height={CANVAS_SIZE}
+          viewportWidth={CANVAS_SIZE}
+          viewportHeight={CANVAS_SIZE}
+          panPosition={{ x: view.x, y: view.y }}
+          zoom={view.scale}
+          pixels={pixels}
+          gridSize={GRID_SIZE}
+        />
+      </div>
     </div>
   );
 });
