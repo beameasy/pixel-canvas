@@ -4,6 +4,7 @@ import { PrivyProvider } from '@privy-io/react-auth';
 import { PropsWithChildren } from 'react';
 
 export function Providers({ children }: PropsWithChildren) {
+
   if (!process.env.NEXT_PUBLIC_PRIVY_APP_ID) {
     console.error('Missing PRIVY_APP_ID');
     return <>{children}</>;
@@ -16,7 +17,7 @@ export function Providers({ children }: PropsWithChildren) {
         loginMethods: ['wallet'],
         appearance: {
           theme: 'dark',
-          accentColor: '#646cff',
+          accentColor: '#FFD700',
         },
       }}
     >

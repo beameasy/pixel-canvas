@@ -1,0 +1,18 @@
+---
+description: process flow for pixel-canvas app
+globs: 
+---
+
+1️⃣ User places a pixel	Frontend updates UI instantly (Optimistic UI). The pixel is not yet confirmed by the server, but the user sees it immediately.
+2️⃣ API request sent to Vercel backend	The client sends a request to Vercel's API route (/api/place-pixel).
+3️⃣ Backend checks Redis for cooldown & token logic	- The API function checks Redis instead of PostgreSQL (fast lookup).
+- If a pixel exists at (x, y), verify:
+  ✅ Has 12 hours passed?
+  ✅ If not, does the user have more tokens?
+4️⃣ If valid, update Redis and queue DB write	- Redis immediately updates with the new pixel.
+- The pixel is asynchronously inserted into PostgreSQL.
+5️⃣ Supabase Realtime broadcasts the update	- A PostgreSQL trigger notifies Supabase Realtime of the new pixel.
+- Supabase sends the update to all connected clients (like a WebSocket).
+6️⃣ Frontend listens for real-time pixel updates	- Clients subscribe to Supabase Realtime.
+- When an update is received, the canvas updates automatically.
+7️⃣ Periodically sync Redis with PostgreSQL	- Every X minutes, a background process persists Redis data to PostgreSQL to ensure durability.

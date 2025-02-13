@@ -1,41 +1,95 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { redis } from '@/lib/server/redis';
+import { authenticateUser } from '../_lib/authenticateUser';
+import { getAdminClient } from '../_lib/supabaseAdmin';
+import { alchemy } from '../_lib/alchemyServer';
 
-export const runtime = 'edge';
+// Get canvas state
+export async function GET() {
+  try {
+    // First try to get from Redis cache
+    const pixels = await redis.hgetall('canvas:pixels');
+    
+    if (!pixels || Object.keys(pixels).length === 0) {
+      // If Redis is empty, fetch from Supabase and rebuild cache
+      const supabase = getAdminClient();
+      const { data: latestPixels } = await supabase
+        .from('pixels')
+        .select('id, x, y, color, wallet_address, placed_at')
+        .order('placed_at', { ascending: false });
 
-const COOLDOWN_PERIOD = 60; // seconds
-
-export async function POST(request: Request) {
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-  const { x, y, color, wallet_address } = await request.json();
-  
-  // Check cooldown
-  const { data: lastPlacement } = await supabase
-    .from('pixels')
-    .select('placed_at')
-    .eq('placed_by', wallet_address)
-    .order('placed_at', { ascending: false })
-    .limit(1);
-
-  if (lastPlacement?.[0]) {
-    const timeSinceLastPlacement = (Date.now() - new Date(lastPlacement[0].placed_at).getTime()) / 1000;
-    if (timeSinceLastPlacement < COOLDOWN_PERIOD) {
-      return NextResponse.json({ 
-        error: `Please wait ${Math.ceil(COOLDOWN_PERIOD - timeSinceLastPlacement)} seconds` 
-      }, { status: 429 });
+      if (latestPixels) {
+        // Transform and cache the data
+        const pixelMap: Record<string, string> = {};
+        latestPixels.forEach((pixel) => {
+          const key = `${pixel.x},${pixel.y}`;
+          // Match Supabase schema exactly
+          pixelMap[key] = JSON.stringify({
+            id: pixel.id,
+            color: pixel.color,
+            wallet_address: pixel.wallet_address,
+            placed_at: pixel.placed_at
+          });
+        });
+        
+        if (Object.keys(pixelMap).length > 0) {
+          await redis.hset('canvas:pixels', pixelMap);
+        }
+        
+        return NextResponse.json(Object.entries(pixelMap).map(([key, value]) => ({
+          position: key,
+          ...JSON.parse(value)
+        })));
+      }
     }
-  }
 
-  // Place pixel
-  const { error } = await supabase.from('pixels').upsert({ x, y, color, placed_by: wallet_address });
-  
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    // Return cached data if it exists
+    return NextResponse.json(Object.entries(pixels || {}).map(([key, value]) => ({
+      position: key,
+      ...JSON.parse(value as string)
+    })));
+  } catch (error) {
+    console.error('Error fetching pixels:', error);
+    return NextResponse.json({ error: 'Failed to fetch pixels' }, { status: 500 });
   }
-  
-  return NextResponse.json({ success: true });
+}
+
+// Place pixel
+export async function POST(request: Request) {
+  try {
+    const user = await authenticateUser(request);
+    if (!user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const { x, y, color } = await request.json();
+    const key = `${x},${y}`;
+    const timestamp = new Date().toISOString();
+
+    // Log the user object to see its structure
+    console.log('Authenticated user:', user);
+    console.log('User object:', user);
+
+    // Store in Redis for current canvas state
+    const pixelData = JSON.stringify({
+      color,
+      wallet_address: user.walletAddress,
+      placed_at: timestamp
+    });
+    await redis.hset('canvas:pixels', { [key]: pixelData });
+
+    // Add to Redis queue for Supabase processing
+    await redis.lpush('canvas:pixels:queue', JSON.stringify({
+      x,
+      y,
+      color,
+      wallet_address: user.walletAddress,
+      placed_at: timestamp
+    }));
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error('Error placing pixel:', error);
+    return NextResponse.json({ error: 'Failed to place pixel' }, { status: 500 });
+  }
 } 

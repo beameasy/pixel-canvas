@@ -10,8 +10,10 @@
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: rgb(var(--background-rgb));
+  margin: 0;
+  padding: 0;
+  background-color: rgb(30, 41, 59);
+  color: #fff;
 }
 
 /* Prevent right-click menu for canvas panning */
@@ -60,4 +62,27 @@ html, body {
   top: 2.5rem; /* Move down to account for ticker height */
   left: 1rem;
   z-index: 30; /* Below ticker's z-40 */
+}
+
+.canvas-container {
+  width: 100%;
+  max-width: 600px;
+  height: auto;
+  background-color: white;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+@media (max-width: 768px) {
+  .canvas-container {
+    width: calc(100% - 32px);
+    height: auto;
+  }
+}
+
+@media (min-width: 768px) {
+  .canvas-container {
+    width: 600px;
+    height: 600px;
+  }
 }

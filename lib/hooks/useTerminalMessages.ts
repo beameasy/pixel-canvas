@@ -60,7 +60,7 @@ export function useTerminalMessages(limit = 100, page = 0, usePagination = true)
     return () => {
       channel.unsubscribe();
     };
-  }, [fetchMessages]);
+  }, [fetchMessages, limit]);
 
   return { messages, loading, hasMore };
 } 

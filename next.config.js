@@ -8,6 +8,26 @@ const nextConfig = {
         pathname: '/**',
       },
     ],
+    domains: ['i.imgur.com', 'i.seadn.io'],
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        net: false,
+        tls: false,
+        dns: false,
+      };
+    }
+    return config;
+  },
+  experimental: {
+    turbo: {
+      enabled: true
+    }
   },
 }
 
