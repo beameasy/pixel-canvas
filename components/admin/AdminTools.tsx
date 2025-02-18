@@ -6,7 +6,7 @@ import { isAdmin } from './utils';
 
 interface AdminToolsProps {
   onBanWallet: (wallet: string, reason: string) => Promise<void>;
-  onClearSelection: (startX: number, startY: number, endX: number, endY: number) => Promise<void>;
+  onClearSelection: (coordinates: Array<{x: number, y: number}>) => Promise<void>;
   onSelectionModeToggle: (enabled: boolean) => void;
 }
 

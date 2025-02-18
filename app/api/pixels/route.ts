@@ -19,29 +19,63 @@ export async function GET() {
     const isConnected = await redis.ping();
     console.log('🔵 Redis connection:', isConnected);
     
-    // Check if key exists first
-    const exists = await redis.exists('canvas:pixels');
-    console.log('🔵 Canvas pixels exists:', exists);
+    // Check if key exists and get type
+    const keyType = await redis.type('canvas:pixels');
+    console.log('🔵 Canvas pixels type:', keyType);
     
-    // Get pixels from Redis with explicit type check
-    const pixels = exists ? await redis.hgetall('canvas:pixels') : {};
-    console.log('🔵 Raw Redis response:', pixels);
+    if (keyType !== 'hash') {
+      console.log('🔵 Invalid key type or missing key, returning empty array');
+      return NextResponse.json([]);
+    }
+
+    // Get length first
+    const length = await redis.hlen('canvas:pixels');
+    console.log('🔵 Hash length:', length);
+
+    // Use scan instead of hgetall
+    let cursor = 0;
+    const pixelMap = new Map();
     
-    // Convert to array safely
-    const pixelsArray = Object.entries(pixels || {}).map(([key, value]) => {
-      const [x, y] = key.split(',');
-      const pixelData = typeof value === 'string' ? JSON.parse(value) : value;
-      return {
-        ...pixelData,
-        x: parseInt(x),
-        y: parseInt(y)
-      };
+    do {
+      const [newCursor, batch] = await redis.hscan('canvas:pixels', cursor, {
+        count: 1000
+      });
+      cursor = Number(newCursor);
+      
+      console.log('🔵 Scanning batch:', {
+        cursor,
+        batchSize: batch.length / 2
+      });
+
+      // Process batch
+      for (let i = 0; i < batch.length; i += 2) {
+        const key = batch[i];
+        const value = batch[i + 1];
+        try {
+          const [x, y] = String(key).split(',');
+          const pixelData = typeof value === 'string' ? JSON.parse(value) : value;
+          pixelMap.set(key, {
+            ...pixelData,
+            x: parseInt(x),
+            y: parseInt(y)
+          });
+        } catch (err) {
+          console.error('❌ Error processing pixel:', { key, error: err });
+        }
+      }
+    } while (cursor !== 0);
+
+    const pixelsArray = Array.from(pixelMap.values());
+    
+    console.log('🔵 Processed pixels:', {
+      count: pixelsArray.length,
+      expected: length
     });
 
     return NextResponse.json(pixelsArray);
   } catch (error) {
     console.error('❌ Error fetching pixels:', error);
-    return NextResponse.json([], { status: 200 }); // Return empty array with 200
+    return NextResponse.json([], { status: 200 });
   }
 }
 

@@ -8,6 +8,7 @@ import { useFarcasterUser } from '@/components/farcaster/hooks/useFarcasterUser'
 import Controls from '@/components/layout/Controls';
 import { AdminTools } from '@/components/admin/AdminTools';
 import { isAdmin } from '@/components/admin/utils';
+import { SelectionOverlay } from '../admin/SelectionOverlay';
 // import SideColorPicker from './SideColorPicker';
 
 declare global {
@@ -21,6 +22,7 @@ const GRID_SIZE = 400;        // Double from 200 to 400
 const MIN_ZOOM = 0.25;        // Reduce min zoom to allow viewing more of the canvas
 const MAX_ZOOM = 20;          // Keep max zoom the same
 const TOOLTIP_ZOOM_THRESHOLD = 3.0; // Increase threshold since pixels are smaller
+const GRID_ZOOM_THRESHOLD = 4.0; // Show grid lines when zoomed in this much
 
 interface ViewState {
   x: number;
@@ -40,6 +42,8 @@ interface CanvasProps {
   }>;
   touchMode: 'view' | 'place';
   onTouchModeChange: (mode: 'view' | 'place') => void;
+  selectionMode: boolean;
+  onClearSelection: (coordinates: Array<{x: number, y: number}>) => Promise<void>;
 }
 
 // Add interface for pixel data
@@ -53,7 +57,7 @@ interface PixelData {
   locked_until?: string | null;
 }
 
-const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange }, ref) => {
+const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange, selectionMode, onClearSelection }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { user, login } = usePrivy();
   const { wallets } = useWallets();
@@ -224,9 +228,25 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       });
     });
 
+    // Add handler for pixels-cleared event
+    channel.bind('pixels-cleared', (data: { pixels: Array<any> }) => {
+      setPixels(prev => {
+        const newPixels = new Map(prev);
+        data.pixels.forEach(pixel => {
+          const key = `${pixel.x},${pixel.y}`;
+          if (pixel.is_cleared) {
+            newPixels.delete(key);
+          } else {
+            newPixels.set(key, pixel);
+          }
+        });
+        return newPixels;
+      });
+    });
+
     return () => {
       channel.unbind_all();
-      channel.unsubscribe();
+      pusherClient.unsubscribe('canvas');
     };
   }, []); // Remove drawSinglePixel from dependencies
 
@@ -352,6 +372,13 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       const key = `${x},${y}`;
       const pixelData = pixels.get(key);
 
+      // Skip tooltip for cleared pixels (they only have x, y, color, placed_at)
+      if (pixelData && !pixelData.wallet_address && pixelData.color === '#ffffff') {
+        setHoverData(null);
+        setPreviewPixel({ x, y });
+        return;
+      }
+
       // Check if mouse is within the current pixel bounds
       const pixelScreenX = x * PIXEL_SIZE * view.scale + view.x;
       const pixelScreenY = y * PIXEL_SIZE * view.scale + view.y;
@@ -427,13 +454,14 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
 
-    // Use existing canvas clearing and setup
+    // Clear and setup
     ctx.fillStyle = '#2C2C2C';
     ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
     const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * view.scale;
     const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * view.scale;
     
+    // Draw white background
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(
       view.x,
@@ -442,7 +470,7 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       gridPixelHeight
     );
 
-    // Keep existing pixel rendering
+    // Draw pixels
     pixels.forEach((pixel, key) => {
       const [x, y] = key.split(',').map(Number);
       const screenX = x * PIXEL_SIZE * view.scale + view.x;
@@ -457,6 +485,31 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       );
     });
 
+    // Draw grid when zoomed in enough
+    if (view.scale >= GRID_ZOOM_THRESHOLD) {
+      ctx.strokeStyle = '#00000010'; // Very light grid lines
+      ctx.lineWidth = 1;
+      
+      // Vertical lines
+      for (let x = 0; x <= GRID_SIZE; x++) {
+        const screenX = x * PIXEL_SIZE * view.scale + view.x;
+        ctx.beginPath();
+        ctx.moveTo(screenX, view.y);
+        ctx.lineTo(screenX, view.y + gridPixelHeight);
+        ctx.stroke();
+      }
+      
+      // Horizontal lines
+      for (let y = 0; y <= GRID_SIZE; y++) {
+        const screenY = y * PIXEL_SIZE * view.scale + view.y;
+        ctx.beginPath();
+        ctx.moveTo(view.x, screenY);
+        ctx.lineTo(view.x + gridPixelWidth, screenY);
+        ctx.stroke();
+      }
+    }
+
+    // Draw border
     ctx.strokeStyle = '#666666';
     ctx.lineWidth = 2;
     ctx.strokeRect(
@@ -466,25 +519,8 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       gridPixelHeight
     );
 
-    // Draw selection rectangle if in selection mode
-    if (isSelectionMode && selectionStart && selectionEnd) {
-      const startX = Math.min(selectionStart.x, selectionEnd.x);
-      const endX = Math.max(selectionStart.x, selectionEnd.x);
-      const startY = Math.min(selectionStart.y, selectionEnd.y);
-      const endY = Math.max(selectionStart.y, selectionEnd.y);
-
-      ctx.strokeStyle = '#FF0000';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(
-        startX * PIXEL_SIZE * view.scale + view.x,
-        startY * PIXEL_SIZE * view.scale + view.y,
-        (endX - startX + 1) * PIXEL_SIZE * view.scale,
-        (endY - startY + 1) * PIXEL_SIZE * view.scale
-      );
-    }
-
     needsRender.current = false;
-  }, [pixels, view, isSelectionMode, selectionStart, selectionEnd, PIXEL_SIZE]);
+  }, [pixels, view, PIXEL_SIZE]);
 
   // Add RAF loop
   const animate = useCallback(() => {
@@ -964,18 +1000,11 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     }
   };
 
-  const handleClearSelection = async (startX: number, startY: number, endX: number, endY: number) => {
+  const handleClearSelection = async (coordinates: Array<{x: number, y: number}>) => {
     try {
-      const response = await fetch('/api/admin/clear', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startX, startY, endX, endY })
-      });
-      if (!response.ok) throw new Error('Failed to clear selection');
-      setFlashMessage('Cleared selection');
+      await onClearSelection(coordinates);
     } catch (error) {
-      console.error('Failed to clear selection:', error);
-      setFlashMessage('Failed to clear selection');
+      console.error('Error clearing selection:', error);
     }
   };
 
@@ -1062,9 +1091,9 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       style={{ 
         touchAction: 'none',
         overflow: 'hidden',
-        width: '90vmin',
-        height: '90vmin',
-        maxWidth: '90vh',
+        width: '100%',
+        aspectRatio: '1',
+        maxWidth: isSmallScreen ? '100vw' : '90vh',
         minWidth: '300px',
         margin: '0 auto',
         isolation: 'isolate',
@@ -1089,23 +1118,40 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
         </div>
       )}
       
-      <canvas
-        ref={canvasRef}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseLeave}
-        onTouchStart={handleReactTouchStart}
-        onTouchMove={handleReactTouchMove}
-        onTouchEnd={handleReactTouchEnd}
-        onContextMenu={(e) => e.preventDefault()}
-        className="w-full h-full touch-none"
-        style={{
-          cursor: isDragging ? 'grabbing' : 'default',
-          imageRendering: 'pixelated',
-          touchAction: 'none'
-        }}
-      />
+    <div 
+  className="relative"
+  style={{ width: canvasSize, height: canvasSize }}
+>
+        <canvas
+          ref={canvasRef}
+          width={canvasSize}
+          height={canvasSize}
+          className="absolute top-0 left-0"
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseLeave}
+          onTouchStart={handleReactTouchStart}
+          onTouchMove={handleReactTouchMove}
+          onTouchEnd={handleReactTouchEnd}
+          onContextMenu={(e) => e.preventDefault()}
+          style={{
+            cursor: isDragging ? 'grabbing' : 'default',
+            imageRendering: 'pixelated',
+            touchAction: 'none'
+          }}
+        />
+        
+        {/* Add Selection Overlay */}
+        <SelectionOverlay 
+          enabled={selectionMode} 
+          onClearSelection={onClearSelection}
+          scale={view.scale}
+          pixelSize={PIXEL_SIZE}
+          viewX={view.x}
+          viewY={view.y}
+        />
+      </div>
       
       {hoverData && (
         <>
@@ -1216,15 +1262,25 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
           pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
         />
       )}
-      {isAdmin(address) && (
-        <AdminTools
-          onBanWallet={handleBanWallet}
-          onClearSelection={handleClearSelection}
-          onSelectionModeToggle={handleSelectionModeToggle}
-        />
+      {!isSmallScreen && windowSize.width > 0 && (
+        <div className="absolute bottom-2 right-2">
+          <Minimap
+            canvasSize={GRID_SIZE}
+            viewportSize={{
+              width: canvasSize / (PIXEL_SIZE * view.scale),
+              height: canvasSize / (PIXEL_SIZE * view.scale)
+            }}
+            viewPosition={{
+              x: -view.x / (PIXEL_SIZE * view.scale),
+              y: -view.y / (PIXEL_SIZE * view.scale)
+            }}
+            pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
+          />
+        </div>
       )}
     </div>
   );
 });
 
+Canvas.displayName = 'Canvas';
 export default Canvas;

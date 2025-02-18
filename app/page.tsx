@@ -5,9 +5,10 @@ import PixelLogo from '@/components/ui/PixelLogo';
 import Controls from '@/components/layout/Controls';
 import { usePrivy } from '@privy-io/react-auth';
 import { useState, useRef, useEffect } from 'react';
+import { AdminTools } from '@/components/admin/AdminTools';
 
 export default function Home() {
-  const { authenticated } = usePrivy();
+  const { authenticated, user } = usePrivy();
   const [selectedColor, setSelectedColor] = useState('#000000');
   const [showError, setShowError] = useState(false);
   const [mousePos, setMousePos] = useState({ x: -1, y: -1 });
@@ -17,6 +18,7 @@ export default function Home() {
     clearCanvas: () => void;
     shareCanvas: () => void;
   }>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -33,6 +35,57 @@ export default function Home() {
 
   const handleShare = () => {
     canvasRef.current?.shareCanvas();
+  };
+
+  const handleClearSelection = async (coordinates: Array<{x: number, y: number}>) => {
+    try {
+      console.log('Clearing pixels:', coordinates);
+      const response = await fetch('/api/admin/clear-pixels', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-wallet-address': user?.wallet?.address || '',
+        },
+        body: JSON.stringify({ coordinates }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Clear request failed:', errorData);
+        throw new Error(errorData.error || 'Failed to clear pixels');
+      }
+    } catch (error) {
+      console.error('Error clearing pixels:', error);
+      throw error;
+    }
+  };
+
+  const handleBanWallet = async (walletAddress: string, reason: string) => {
+    try {
+      console.log('Sending ban request:', { walletAddress, reason });
+      const response = await fetch('/api/admin/ban', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-wallet-address': user?.wallet?.address || '',
+        },
+        body: JSON.stringify({ 
+          wallet: walletAddress,
+          reason,
+          banned_at: new Date().toISOString(),
+          banned_by: user?.wallet?.address
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Ban request failed:', errorData);
+        throw new Error(errorData.error || 'Failed to ban wallet');
+      }
+    } catch (error) {
+      console.error('Error banning wallet:', error);
+      throw error;
+    }
   };
 
   return (
@@ -62,6 +115,12 @@ export default function Home() {
             flashMessage={null}
           />
           
+          <AdminTools 
+            onBanWallet={handleBanWallet}
+            onClearSelection={handleClearSelection}
+            onSelectionModeToggle={setSelectionMode}
+          />
+          
           <Canvas 
             ref={canvasRef}
             selectedColor={selectedColor}
@@ -71,6 +130,8 @@ export default function Home() {
             onMousePosChange={(pos) => pos ? setMousePos(pos) : setMousePos({ x: -1, y: -1 })}
             touchMode={touchMode}
             onTouchModeChange={setTouchMode}
+            selectionMode={selectionMode}
+            onClearSelection={handleClearSelection}
           />
         </div>
       </main>
