@@ -2,11 +2,12 @@
 
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback, memo } from 'react';
 import { usePrivy, useWallets, getAccessToken } from '@privy-io/react-auth';
-import { useFarcasterUser } from '@/components/farcaster/hooks/useFarcasterUser';
 import { Minimap } from './MiniMap';
 import { pusherClient } from '@/lib/client/pusher';
-import { getBillboardBalance } from '@/app/api/_lib/subgraphClient';
+import { useFarcasterUser } from '@/components/farcaster/hooks/useFarcasterUser';
 import Controls from '@/components/layout/Controls';
+import { AdminTools } from '@/components/admin/AdminTools';
+import { isAdmin } from '@/components/admin/utils';
 // import SideColorPicker from './SideColorPicker';
 
 declare global {
@@ -59,9 +60,12 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
   const activeWallet = wallets?.[0];
   const address = activeWallet?.address;
   const containerRef = useRef<HTMLDivElement>(null);
+  const animationFrameRef = useRef<number>(0);
+  const pixelQueueRef = useRef<{x: number, y: number, color: string}[]>([]);
 
   // State
   const [pixels, setPixels] = useState<Map<string, PixelData>>(new Map());
+  const [isLoading, setIsLoading] = useState(true);
   const [view, setView] = useState<ViewState>({
     x: 0,
     y: 0,
@@ -92,6 +96,27 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
 
   // Add debug logging
   const [lastTouchAction, setLastTouchAction] = useState<string>('');
+
+  // Add state for hover data
+  const [hoverData, setHoverData] = useState<{
+    x: number;
+    y: number;
+    screenX: number;
+    screenY: number;
+    pixel: PixelData | null;
+  } | null>(null);
+
+  // Add RAF-specific refs and state
+  const rafRef = useRef<number>(0);
+  const needsRender = useRef<boolean>(false);
+
+  // Add a ref to track recent placement
+  const lastPlacementRef = useRef<number>(0);
+
+  const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
+  const [selectionEnd, setSelectionEnd] = useState<{ x: number; y: number } | null>(null);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [isAdminMode, setIsAdminMode] = useState(false);
 
   useEffect(() => {
     const updateCanvasSize = () => {
@@ -211,7 +236,7 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       const response = await fetch('/api/pixels');
       const data = await response.json();
       
-      // Convert array to Map without excessive logging
+      // Convert array to Map
       const pixelMap = new Map();
       data.forEach((pixel: any) => {
         pixelMap.set(`${pixel.x},${pixel.y}`, pixel);
@@ -289,17 +314,8 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     return `${days}d`;
   };
 
-  // Add state for hover data
-  const [hoverData, setHoverData] = useState<{
-    x: number;
-    y: number;
-    screenX: number;
-    screenY: number;
-    pixel: PixelData | null;
-  } | null>(null);
-
   // Update handleMouseMove
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
@@ -323,6 +339,13 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     const y = Math.floor((canvasY - view.y) / (PIXEL_SIZE * view.scale));
     
     onMousePosChange({ x, y });
+
+    // Check if we recently placed a pixel (within last 1000ms)
+    const timeSincePlacement = Date.now() - lastPlacementRef.current;
+    if (timeSincePlacement < 1000) {
+      onMousePosChange(null); // Hide tooltip
+      return;
+    }
 
     // Only show tooltip if zoomed in enough and not dragging
     if (!isDragging && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
@@ -354,7 +377,7 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       setHoverData(null);
       setPreviewPixel({ x: -1, y: -1 });
     }
-  };
+  }, [pixels, view, PIXEL_SIZE, isDragging, dragStart, dragStartPos, onMousePosChange]);
 
   // Modify handleMouseUp
   const handleMouseUp = async (e: React.MouseEvent) => {
@@ -397,21 +420,20 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     };
   }, [tooltipTimeout]);
 
-  // Modify the render useEffect to remove DEBUG logging
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  // Add render callback
+  const render = useCallback(() => {
+    if (!canvasRef.current || !needsRender.current) return;
     
-    const ctx = canvas.getContext('2d');
+    const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
 
-    // Clear canvas with gray background
+    // Use existing canvas clearing and setup
     ctx.fillStyle = '#2C2C2C';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
-    // Draw white background for the pixel grid area
     const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * view.scale;
     const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * view.scale;
+    
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(
       view.x,
@@ -420,7 +442,7 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       gridPixelHeight
     );
 
-    // Draw pixels without logging
+    // Keep existing pixel rendering
     pixels.forEach((pixel, key) => {
       const [x, y] = key.split(',').map(Number);
       const screenX = x * PIXEL_SIZE * view.scale + view.x;
@@ -435,43 +457,6 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       );
     });
 
-    // Draw preview pixel if valid position
-    if (previewPixel.x !== -1 && previewPixel.y !== -1 && !isDragging) {
-      const screenX = previewPixel.x * PIXEL_SIZE * view.scale + view.x;
-      const screenY = previewPixel.y * PIXEL_SIZE * view.scale + view.y;
-      
-      ctx.fillStyle = selectedColor + '80'; // 50% opacity
-      ctx.fillRect(
-        screenX,
-        screenY,
-        PIXEL_SIZE * view.scale,
-        PIXEL_SIZE * view.scale
-      );
-    }
-
-    // Draw grid when zoomed in
-    if (view.scale > 4) {
-      ctx.strokeStyle = '#CCCCCC';
-      ctx.lineWidth = 0.5;
-      
-      for (let x = 0; x <= GRID_SIZE; x++) {
-        const screenX = x * PIXEL_SIZE * view.scale + view.x;
-        ctx.beginPath();
-        ctx.moveTo(screenX, view.y);
-        ctx.lineTo(screenX, GRID_SIZE * PIXEL_SIZE * view.scale + view.y);
-        ctx.stroke();
-      }
-
-      for (let y = 0; y <= GRID_SIZE; y++) {
-        const screenY = y * PIXEL_SIZE * view.scale + view.y;
-        ctx.beginPath();
-        ctx.moveTo(view.x, screenY);
-        ctx.lineTo(GRID_SIZE * PIXEL_SIZE * view.scale + view.x, screenY);
-        ctx.stroke();
-      }
-    }
-
-    // Draw border around the pixel grid area
     ctx.strokeStyle = '#666666';
     ctx.lineWidth = 2;
     ctx.strokeRect(
@@ -480,7 +465,47 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       gridPixelWidth,
       gridPixelHeight
     );
-  }, [view, pixels, previewPixel, selectedColor, isDragging, PIXEL_SIZE]);
+
+    // Draw selection rectangle if in selection mode
+    if (isSelectionMode && selectionStart && selectionEnd) {
+      const startX = Math.min(selectionStart.x, selectionEnd.x);
+      const endX = Math.max(selectionStart.x, selectionEnd.x);
+      const startY = Math.min(selectionStart.y, selectionEnd.y);
+      const endY = Math.max(selectionStart.y, selectionEnd.y);
+
+      ctx.strokeStyle = '#FF0000';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(
+        startX * PIXEL_SIZE * view.scale + view.x,
+        startY * PIXEL_SIZE * view.scale + view.y,
+        (endX - startX + 1) * PIXEL_SIZE * view.scale,
+        (endY - startY + 1) * PIXEL_SIZE * view.scale
+      );
+    }
+
+    needsRender.current = false;
+  }, [pixels, view, isSelectionMode, selectionStart, selectionEnd, PIXEL_SIZE]);
+
+  // Add RAF loop
+  const animate = useCallback(() => {
+    render();
+    rafRef.current = requestAnimationFrame(animate);
+  }, [render]);
+
+  // Start RAF immediately on mount
+  useEffect(() => {
+    rafRef.current = requestAnimationFrame(animate);
+    return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
+    };
+  }, [animate]);
+
+  // Request render when view or pixels change
+  useEffect(() => {
+    needsRender.current = true;
+  }, [view, pixels]);
 
   // Add this to debug what data we have available
   useEffect(() => {
@@ -535,6 +560,9 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
           return newPixels;
         });
       }
+
+      lastPlacementRef.current = Date.now(); // Record placement time
+      onMousePosChange(null); // Hide tooltip immediately after placement
     } catch (error) {
       console.error('Failed to place pixel:', error);
       setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
@@ -828,6 +856,205 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     });
   }, []);
 
+  // Render canvas
+  useEffect(() => {
+    if (isLoading || !canvasRef.current) return;
+
+    const ctx = canvasRef.current.getContext('2d');
+    if (!ctx) return;
+
+    // Clear canvas with gray background
+    ctx.fillStyle = '#2C2C2C';
+    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+    // Draw white background for the pixel grid area
+    const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * view.scale;
+    const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * view.scale;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(
+      view.x,
+      view.y,
+      gridPixelWidth,
+      gridPixelHeight
+    );
+
+    // Draw pixels with proper scaling and position
+    pixels.forEach((pixel, key) => {
+      const [x, y] = key.split(',').map(Number);
+      const screenX = x * PIXEL_SIZE * view.scale + view.x;
+      const screenY = y * PIXEL_SIZE * view.scale + view.y;
+      
+      ctx.fillStyle = pixel.color;
+      ctx.fillRect(
+        screenX,
+        screenY,
+        PIXEL_SIZE * view.scale,
+        PIXEL_SIZE * view.scale
+      );
+    });
+
+    // Draw preview pixel if valid position
+    if (previewPixel.x !== -1 && previewPixel.y !== -1 && !isDragging) {
+      const screenX = previewPixel.x * PIXEL_SIZE * view.scale + view.x;
+      const screenY = previewPixel.y * PIXEL_SIZE * view.scale + view.y;
+      
+      ctx.fillStyle = selectedColor + '80'; // 50% opacity
+      ctx.fillRect(
+        screenX,
+        screenY,
+        PIXEL_SIZE * view.scale,
+        PIXEL_SIZE * view.scale
+      );
+    }
+
+    // Draw grid when zoomed in
+    if (view.scale > 4) {
+      ctx.strokeStyle = '#CCCCCC';
+      ctx.lineWidth = 0.5;
+      
+      for (let x = 0; x <= GRID_SIZE; x++) {
+        const screenX = x * PIXEL_SIZE * view.scale + view.x;
+        ctx.beginPath();
+        ctx.moveTo(screenX, view.y);
+        ctx.lineTo(screenX, GRID_SIZE * PIXEL_SIZE * view.scale + view.y);
+        ctx.stroke();
+      }
+
+      for (let y = 0; y <= GRID_SIZE; y++) {
+        const screenY = y * PIXEL_SIZE * view.scale + view.y;
+        ctx.beginPath();
+        ctx.moveTo(view.x, screenY);
+        ctx.lineTo(GRID_SIZE * PIXEL_SIZE * view.scale + view.x, screenY);
+        ctx.stroke();
+      }
+    }
+
+    // Draw border
+    ctx.strokeStyle = '#666666';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+      view.x,
+      view.y,
+      gridPixelWidth,
+      gridPixelHeight
+    );
+  }, [pixels, isLoading, view, PIXEL_SIZE]);
+
+  // Add admin handlers
+  const handleBanWallet = async (wallet: string, reason?: string) => {
+    try {
+      const response = await fetch('/api/admin/ban', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-wallet-address': address || ''
+        },
+        body: JSON.stringify({ wallet, reason })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to ban wallet');
+      }
+
+      const data = await response.json();
+      console.log('Successfully queued wallet ban:', wallet);
+    } catch (error) {
+      console.error('Failed to ban wallet:', error);
+    }
+  };
+
+  const handleClearSelection = async (startX: number, startY: number, endX: number, endY: number) => {
+    try {
+      const response = await fetch('/api/admin/clear', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startX, startY, endX, endY })
+      });
+      if (!response.ok) throw new Error('Failed to clear selection');
+      setFlashMessage('Cleared selection');
+    } catch (error) {
+      console.error('Failed to clear selection:', error);
+      setFlashMessage('Failed to clear selection');
+    }
+  };
+
+  // Add selection handlers
+  const handleSelectionStart = useCallback((e: MouseEvent) => {
+    if (!isSelectionMode) return;
+    
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const x = Math.floor((e.clientX - rect.left - view.x) / (PIXEL_SIZE * view.scale));
+    const y = Math.floor((e.clientY - rect.top - view.y) / (PIXEL_SIZE * view.scale));
+    
+    setSelectionStart({ x, y });
+    setSelectionEnd({ x, y });
+  }, [view, isSelectionMode, PIXEL_SIZE]);
+
+  const handleSelectionMove = useCallback((e: MouseEvent) => {
+    if (!isSelectionMode || !selectionStart) return;
+    
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const x = Math.floor((e.clientX - rect.left - view.x) / (PIXEL_SIZE * view.scale));
+    const y = Math.floor((e.clientY - rect.top - view.y) / (PIXEL_SIZE * view.scale));
+    
+    setSelectionEnd({ x, y });
+  }, [view, isSelectionMode, selectionStart, PIXEL_SIZE]);
+
+  const handleSelectionEnd = useCallback(async () => {
+    if (!selectionStart || !selectionEnd) return;
+
+    const startX = Math.min(selectionStart.x, selectionEnd.x);
+    const endX = Math.max(selectionStart.x, selectionEnd.x);
+    const startY = Math.min(selectionStart.y, selectionEnd.y);
+    const endY = Math.max(selectionStart.y, selectionEnd.y);
+
+    try {
+      const response = await fetch('/api/admin/clear', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-wallet-address': address || ''
+        },
+        body: JSON.stringify({ startX, startY, endX, endY })
+      });
+
+      if (!response.ok) throw new Error('Failed to clear selection');
+      
+      setSelectionStart(null);
+      setSelectionEnd(null);
+    } catch (error) {
+      console.error('Failed to clear selection:', error);
+    }
+  }, [selectionStart, selectionEnd, address]);
+
+  // Update your event listeners
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.addEventListener('mousedown', handleSelectionStart);
+    canvas.addEventListener('mousemove', handleSelectionMove);
+    canvas.addEventListener('mouseup', handleSelectionEnd);
+
+    return () => {
+      canvas.removeEventListener('mousedown', handleSelectionStart);
+      canvas.removeEventListener('mousemove', handleSelectionMove);
+      canvas.removeEventListener('mouseup', handleSelectionEnd);
+    };
+  }, [handleSelectionStart, handleSelectionMove, handleSelectionEnd]);
+
+  // Add to your AdminTools props
+  const handleSelectionModeToggle = (enabled: boolean) => {
+    setIsSelectionMode(enabled);
+    setSelectionStart(null);
+    setSelectionEnd(null);
+  };
+
   return (
     <div 
       ref={containerRef}
@@ -975,38 +1202,29 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
           </div>
         </>
       )}
-      
-      {!isSmallScreen && windowSize.width > 0 && (
-        <div className="absolute bottom-2 right-2">
-          <Minimap
-            canvasSize={GRID_SIZE}
-            viewportSize={{
-              width: canvasSize / (PIXEL_SIZE * view.scale),
-              height: canvasSize / (PIXEL_SIZE * view.scale)
-            }}
-            viewPosition={{
-              x: -view.x / (PIXEL_SIZE * view.scale),
-              y: -view.y / (PIXEL_SIZE * view.scale)
-            }}
-            pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
-          />
-        </div>
+      {!isLoading && (
+        <Minimap
+          canvasSize={GRID_SIZE}
+          viewportSize={{
+            width: canvasSize / (PIXEL_SIZE * view.scale),
+            height: canvasSize / (PIXEL_SIZE * view.scale)
+          }}
+          viewPosition={{
+            x: -view.x / (PIXEL_SIZE * view.scale),
+            y: -view.y / (PIXEL_SIZE * view.scale)
+          }}
+          pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
+        />
       )}
-
-      <Controls
-        onResetView={() => {}}
-        selectedColor={selectedColor}
-        onColorSelect={onColorSelect}
-        flashMessage={flashMessage}
-        touchMode={touchMode}
-        onTouchModeChange={onTouchModeChange}
-        canvasRef={canvasRef}
-        coordinates={{ x: -1, y: -1 }}
-      />
+      {isAdmin(address) && (
+        <AdminTools
+          onBanWallet={handleBanWallet}
+          onClearSelection={handleClearSelection}
+          onSelectionModeToggle={handleSelectionModeToggle}
+        />
+      )}
     </div>
   );
 });
 
-Canvas.displayName = 'Canvas';
-
-export default Canvas; 
+export default Canvas;

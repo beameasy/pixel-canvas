@@ -1,29 +1,83 @@
-import { createClient } from '@urql/core';
+import { gql, request } from 'graphql-request';
+import { formatUnits } from 'viem';
 
-const SUBGRAPH_URL = 'https://api.studio.thegraph.com/query/[YOUR_ID]/base-token-balances/version/latest';
+const SUBGRAPH_URL = process.env.SUBGRAPH_URL;
+if (!SUBGRAPH_URL) throw new Error('SUBGRAPH_URL not set');
 
-export const client = createClient({
-  url: SUBGRAPH_URL,
-});
+const TOKEN_ADDRESS = process.env.TOKEN_ADDRESS;
+if (!TOKEN_ADDRESS) throw new Error('TOKEN_ADDRESS not set');
 
-export async function getTokenBalance(walletAddress: string, tokenAddress: string) {
-  const query = `
-    query GetBalance($wallet: String!, $token: String!) {
-      account(id: $wallet) {
-        balances(where: { token: $token }) {
-          value
-          token {
-            decimals
-          }
-        }
-      }
+type BalanceResponse = {
+  account?: {
+    id: string;
+    balance: string;
+  };
+};
+
+type PriceResponse = {
+  token: {
+    derivedETH: string;
+  };
+  bundle: {
+    ethPrice: string;
+  };
+};
+
+const GET_BALANCE = gql`
+  query GetBalance($id: String!) {
+    account(id: $id) {
+      id
+      balance
     }
-  `;
+  }
+`;
 
-  const { data } = await client.query(query, {
-    wallet: walletAddress.toLowerCase(),
-    token: tokenAddress.toLowerCase(),
-  }).toPromise();
+const GET_PRICE = gql`
+  query GetPrice($tokenAddress: String!) {
+    token(id: $tokenAddress) {
+      derivedETH
+    }
+    bundle(id: "1") {
+      ethPrice
+    }
+  }
+`;
 
-  return data?.account?.balances[0] || { value: '0' };
+export async function getBillboardBalance(walletAddress: string) {
+    try {
+        const data = await request<BalanceResponse>(
+            SUBGRAPH_URL!,
+            GET_BALANCE,
+            { id: walletAddress.toLowerCase() }
+        );
+        
+        const balanceInWei = data?.account?.balance || "0";
+        return formatUnits(BigInt(balanceInWei), 18); // Convert from wei to ether
+    } catch (error) {
+        console.error("Subgraph query failed:", error);
+        return "0";
+    }
+}
+
+export async function getBillboardPrice(): Promise<number> {
+  try {
+    const data = await request<PriceResponse>(
+      SUBGRAPH_URL!,
+      GET_PRICE,
+      { tokenAddress: TOKEN_ADDRESS!.toLowerCase() }
+    );
+
+    const billboardPriceInEth = parseFloat(data.token.derivedETH);
+    const ethPriceInUsd = parseFloat(data.bundle.ethPrice);
+    return billboardPriceInEth * ethPriceInUsd;
+  } catch (error) {
+    console.error("Price query failed:", error);
+    return 0;
+  }
+}
+
+export async function getTokensNeededForUsdAmount(usdAmount: number): Promise<number> {
+  const billboardPriceInUsd = await getBillboardPrice();
+  if (billboardPriceInUsd === 0) return 0;
+  return usdAmount / billboardPriceInUsd;
 } 

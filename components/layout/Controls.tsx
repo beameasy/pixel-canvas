@@ -1,18 +1,36 @@
 'use client';
 
-import React from 'react';
-import SideColorPicker from '@/components/ui/SideColorPicker';
+import React, { useState, useEffect, useRef } from 'react';
+import SideColorPicker from '../ui/SideColorPicker';
+import { ShareCanvas } from '../share/ShareCanvas';
+import ShareCanvasV2 from '../share/ShareCanvasV2';
 
 interface ControlsProps {
-  coordinates: { x: number; y: number };
   onResetView: () => void;
   selectedColor: string;
   onColorSelect: (color: string) => void;
-  className?: string;
-  flashMessage?: string | null;
+  flashMessage: string | null;
+  touchMode: 'view' | 'place';
+  onTouchModeChange: (mode: 'view' | 'place') => void;
+  canvasRef: React.RefObject<HTMLCanvasElement | {
+    resetView: () => void;
+    clearCanvas: () => void;
+    shareCanvas: () => void;
+  } | null>;
+  coordinates: { x: number; y: number };
 }
 
-export default function Controls({ coordinates, onResetView, selectedColor, onColorSelect, className, flashMessage }: ControlsProps) {
+export default function Controls({ onResetView, selectedColor, onColorSelect, flashMessage, touchMode, onTouchModeChange, canvasRef, coordinates }: ControlsProps) {
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const canvasElementRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    setIsTouchDevice(
+      ('ontouchstart' in window) ||
+      (navigator.maxTouchPoints > 0)
+    );
+  }, []);
+
   return (
     <div className="mb-2 sm:mb-4 flex flex-col gap-2 sm:gap-4 w-full max-w-[600px]">
       {flashMessage && (
@@ -22,14 +40,15 @@ export default function Controls({ coordinates, onResetView, selectedColor, onCo
           </div>
         </div>
       )}
-      <div className="flex justify-center">
+      <div className="flex justify-center gap-2">
         <button
           onClick={onResetView}
-          className="px-4 py-0.5 bg-[#FFD700] text-black font-mono rounded text-xs 
-                   hover:bg-[#FFC700] transition-colors inline-flex items-center"
+          className="bg-yellow-400 hover:bg-yellow-500 text-black px-2 py-0.5 rounded font-mono text-xs"
         >
           Reset View
         </button>
+        <ShareCanvas />
+        <ShareCanvasV2 canvasRef={canvasRef} />
       </div>
       <div className="w-full">
         <SideColorPicker 

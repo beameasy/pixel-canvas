@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import Ticker from '../terminal/Ticker';
 
 interface HeaderProps {
   authenticated: boolean;
@@ -26,8 +27,9 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
   };
 
   return (
-    <header className="sticky top-8">
-      <div className="w-full max-w-[1200px] mx-auto flex flex-col sm:flex-row justify-between items-center px-3 sm:px-4 py-2 gap-2 sm:gap-0">
+    <header className="sticky top-0 z-40">
+      <Ticker />
+      <div className="mt-8 w-full max-w-[1200px] mx-auto flex flex-col sm:flex-row justify-between items-center px-3 sm:px-4 py-2 gap-2 sm:gap-0">
         <nav className="flex items-center gap-4 sm:gap-6 text-xs sm:text-sm overflow-x-auto w-full sm:w-auto">
           <Link 
             href="/" 

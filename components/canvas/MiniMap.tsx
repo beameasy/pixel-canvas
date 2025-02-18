@@ -1,53 +1,23 @@
 'use client';
 
-import { useRef, useEffect, useMemo } from 'react';
+import { useEffect, useRef } from 'react';
 
-interface MiniMapProps {
-  width: number;
-  height: number;
-  viewportWidth: number;
-  viewportHeight: number;
-  panPosition: { x: number; y: number };
-  zoom: number;
+interface MinimapProps {
+  canvasSize: number;
+  viewportSize: { width: number; height: number };
+  viewPosition: { x: number; y: number };
   pixels: Map<string, string>;
-  gridSize: number;
 }
 
-export default function MiniMap({ 
-  width, 
-  height, 
-  viewportWidth, 
-  viewportHeight,
-  panPosition,
-  zoom,
-  pixels,
-  gridSize
-}: MiniMapProps) {
-  const MINIMAP_SIZE = 120;
-  const MIN_VIEWPORT_SIZE = 20; // Minimum size for viewport rectangle
-  const scale = MINIMAP_SIZE / Math.max(width, height);
-  
-  // Calculate viewport rectangle relative to center
-  const viewportRect = useMemo(() => {
-    const viewportRect = {
-      width: (viewportWidth / zoom) * scale,
-      height: (viewportHeight / zoom) * scale,
-      x: (-panPosition.x / zoom) * scale,
-      y: (-panPosition.y / zoom) * scale
-    };
-  
-    // Constrain viewport rectangle to bounds
-    const margin = 2;
-    return {
-      width: Math.max(MIN_VIEWPORT_SIZE, Math.min(viewportRect.width, MINIMAP_SIZE - margin * 2)),
-      height: Math.max(MIN_VIEWPORT_SIZE, Math.min(viewportRect.height, MINIMAP_SIZE - margin * 2)),
-      x: Math.max(margin, Math.min(viewportRect.x, MINIMAP_SIZE - viewportRect.width - margin)),
-      y: Math.max(margin, Math.min(viewportRect.y, MINIMAP_SIZE - viewportRect.height - margin))
-    };
-  }, [viewportWidth, viewportHeight, panPosition, zoom, scale]);
-
+export function Minimap({ 
+  canvasSize, 
+  viewportSize, 
+  viewPosition, 
+  pixels
+}: MinimapProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const minimapSize = 150; // Reduced from 200 to 150
+  const scale = minimapSize / canvasSize;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -56,46 +26,41 @@ export default function MiniMap({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Clear canvas with a white background
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+    // Clear canvas with white background
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, minimapSize, minimapSize);
 
-    if (pixels && pixels.size > 0) {
-      const pixelSize = Math.max(1, MINIMAP_SIZE / gridSize);
+    // Draw pixels
+    pixels.forEach((color, key) => {
+      const [x, y] = key.split(',').map(Number);
+      ctx.fillStyle = color;
+      ctx.fillRect(x * scale, y * scale, scale, scale);
+    });
 
-      pixels.forEach((color, key) => {
-        const [x, y] = key.split(',').map(Number);
-        ctx.fillStyle = color;
-        const mapX = Math.floor((x / gridSize) * MINIMAP_SIZE);
-        const mapY = Math.floor((y / gridSize) * MINIMAP_SIZE);
-        ctx.fillRect(mapX, mapY, Math.ceil(pixelSize), Math.ceil(pixelSize));
-      });
-    }
+    // Draw viewport indicator
+    const viewportWidth = Math.min(viewportSize.width * scale, minimapSize);
+    const viewportHeight = Math.min(viewportSize.height * scale, minimapSize);
+    const viewX = Math.max(0, Math.min(viewPosition.x * scale, minimapSize - viewportWidth));
+    const viewY = Math.max(0, Math.min(viewPosition.y * scale, minimapSize - viewportHeight));
 
-    // Draw the viewport rectangle
-    ctx.strokeStyle = '#FF0000';
-    ctx.lineWidth = 2;
+    // Draw red rectangle with padding
+    ctx.strokeStyle = 'red';
+    ctx.lineWidth = 1;
     ctx.strokeRect(
-      viewportRect.x,
-      viewportRect.y,
-      viewportRect.width,
-      viewportRect.height
+      viewX,
+      viewY,
+      viewportWidth,
+      viewportHeight
     );
-  }, [pixels, gridSize, viewportRect]);
+  }, [canvasSize, viewportSize, viewPosition, pixels, scale]);
 
-  // Add more margin and a subtle shadow
   return (
-    <div className="p-2">
-      <canvas
-        ref={canvasRef}
-        width={120}
-        height={120}
-        className="border border-neutral-600 rounded-sm"
-        style={{
-          width: `${(containerRef.current?.offsetWidth || MINIMAP_SIZE) / 1}px`,  // Adjust ratio for larger size
-          height: `${(containerRef.current?.offsetWidth || MINIMAP_SIZE) / 1}px`
-        }}
-      />
-    </div>
+    <canvas
+      ref={canvasRef}
+      width={minimapSize}
+      height={minimapSize}
+      className="fixed bottom-4 right-4 border border-gray-300 bg-white shadow-lg"
+      style={{ width: minimapSize, height: minimapSize }}
+    />
   );
 } 

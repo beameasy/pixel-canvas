@@ -1,3 +1,4 @@
+import { BigInt } from "@graphprotocol/graph-ts"
 import {
   Approval as ApprovalEvent,
   CrosschainBurn as CrosschainBurnEvent,
@@ -7,15 +8,7 @@ import {
   EIP712DomainChanged as EIP712DomainChangedEvent,
   Transfer as TransferEvent
 } from "../generated/ClankerToken/ClankerToken"
-import {
-  Approval,
-  CrosschainBurn,
-  CrosschainMint,
-  DelegateChanged,
-  DelegateVotesChanged,
-  EIP712DomainChanged,
-  Transfer
-} from "../generated/schema"
+import { Account, Transfer, CrosschainBurn, Approval, DelegateChanged, CrosschainMint, DelegateVotesChanged, EIP712DomainChanged } from "../generated/schema"
 
 export function handleApproval(event: ApprovalEvent): void {
   let entity = new Approval(
@@ -109,16 +102,28 @@ export function handleEIP712DomainChanged(
 }
 
 export function handleTransfer(event: TransferEvent): void {
-  let entity = new Transfer(
-    event.transaction.hash.concatI32(event.logIndex.toI32())
-  )
-  entity.from = event.params.from
-  entity.to = event.params.to
-  entity.value = event.params.value
+  let transfer = new Transfer(event.transaction.hash.concatI32(event.logIndex.toI32()))
+  transfer.from = event.params.from
+  transfer.to = event.params.to
+  transfer.value = event.params.value
+  transfer.blockNumber = event.block.number
+  transfer.blockTimestamp = event.block.timestamp
+  transfer.transactionHash = event.transaction.hash
+  transfer.save()
 
-  entity.blockNumber = event.block.number
-  entity.blockTimestamp = event.block.timestamp
-  entity.transactionHash = event.transaction.hash
+  let toAccount = Account.load(event.params.to)
+  if (!toAccount) {
+    toAccount = new Account(event.params.to)
+    toAccount.balance = BigInt.fromI32(0)
+  }
+  toAccount.balance = toAccount.balance.plus(event.params.value)
+  toAccount.save()
 
-  entity.save()
+  let fromAccount = Account.load(event.params.from)
+  if (!fromAccount) {
+    fromAccount = new Account(event.params.from)
+    fromAccount.balance = BigInt.fromI32(0)
+  }
+  fromAccount.balance = fromAccount.balance.minus(event.params.value)
+  fromAccount.save()
 }

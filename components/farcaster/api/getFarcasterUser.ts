@@ -40,9 +40,9 @@ export async function getFarcasterUser(address: string) {
       });
 
     return {
-      username: user.username,
-      pfpUrl: user.pfp_url,
-      displayName: user.display_name
+      farcaster_username: user.username,
+      farcaster_pfp: user.pfp_url,
+      display_name: user.display_name
     };
   } catch (error) {
     console.error('Error fetching Farcaster user:', error);

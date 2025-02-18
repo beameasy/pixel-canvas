@@ -1,17 +1,26 @@
 'use client';
 
-import Canvas from '@/components/canvas/Canvas';
+import Canvas from '@/components/canvas/CanvasV2';
 import PixelLogo from '@/components/ui/PixelLogo';
 import Controls from '@/components/layout/Controls';
 import { usePrivy } from '@privy-io/react-auth';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 export default function Home() {
   const { authenticated } = usePrivy();
   const [selectedColor, setSelectedColor] = useState('#000000');
   const [showError, setShowError] = useState(false);
   const [mousePos, setMousePos] = useState({ x: -1, y: -1 });
-  const canvasRef = useRef<{ resetView: () => void; clearCanvas: () => void }>(null);
+  const [touchMode, setTouchMode] = useState<'place' | 'view'>('place');
+  const canvasRef = useRef<{
+    resetView: () => void;
+    clearCanvas: () => void;
+    shareCanvas: () => void;
+  }>(null);
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, []);
 
   const handleAuthError = () => {
     setShowError(true);
@@ -20,6 +29,10 @@ export default function Home() {
 
   const handleResetView = () => {
     canvasRef.current?.resetView();
+  };
+
+  const handleShare = () => {
+    canvasRef.current?.shareCanvas();
   };
 
   return (
@@ -43,14 +56,21 @@ export default function Home() {
             onResetView={handleResetView}
             selectedColor={selectedColor}
             onColorSelect={setSelectedColor}
+            touchMode={touchMode}
+            onTouchModeChange={setTouchMode}
+            canvasRef={canvasRef}
+            flashMessage={null}
           />
           
           <Canvas 
             ref={canvasRef}
             selectedColor={selectedColor}
+            onColorSelect={setSelectedColor}
             authenticated={authenticated}
             onAuthError={handleAuthError}
-            onMousePosChange={(x, y) => setMousePos({ x, y })}
+            onMousePosChange={(pos) => pos ? setMousePos(pos) : setMousePos({ x: -1, y: -1 })}
+            touchMode={touchMode}
+            onTouchModeChange={setTouchMode}
           />
         </div>
       </main>

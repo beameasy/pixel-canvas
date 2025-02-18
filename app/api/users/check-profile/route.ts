@@ -1,86 +1,66 @@
 import { NextResponse } from 'next/server';
-import { getTokenBalance } from '../../_lib/alchemyServer';
 import { redis } from '@/lib/server/redis';
+import { getBillboardBalance } from '@/app/api/_lib/subgraphClient';
+import { getFarcasterUser } from '@/lib/farcaster';
 
-async function getFarcasterProfile(walletAddress: string) {
-  const neynarKey = process.env.NEYNAR_API_KEY;
+export async function POST(req: Request) {
   try {
-    const response = await fetch(
-      `https://api.neynar.com/v2/farcaster/lookup/addresses?blockchain_addresses=${walletAddress}`,
-      {
-        headers: { api_key: neynarKey! }
-      }
-    );
-    const data = await response.json();
-    if (data.users && data.users.length > 0) {
-      return {
-        farcaster_username: data.users[0].username,
-        farcaster_pfp: data.users[0].pfp_url
-      };
-    }
-    return null;
-  } catch (error) {
-    console.error('Farcaster lookup error:', error);
-    return null;
-  }
-}
-
-export async function POST(request: Request) {
-  console.log('🔵 API route hit');
-  
-  try {
-    const { walletAddress, privyId } = await request.json();
-    console.log('🔵 Request data:', { walletAddress, privyId });
+    const { privy_id, wallet_address } = await req.json()
     
-    // Check Redis cache first
-    const cachedUser = await redis.hget('users', walletAddress);
-    console.log('🔵 Redis cache result:', cachedUser);
-
-    // Force refresh if token balance is 0
-    const parsedCache = typeof cachedUser === 'string' ? JSON.parse(cachedUser) : cachedUser;
-    if (parsedCache && parsedCache.token_balance === '0') {
-      console.log('🔄 Forcing refresh due to zero balance');
-    } else if (cachedUser) {
-      return NextResponse.json(parsedCache);
+    // Add validation here
+    if (!wallet_address || !privy_id) {
+      console.log('🔴 Missing required fields:', { wallet_address, privy_id })
+      return NextResponse.json(
+        { error: 'Missing required fields' }, 
+        { status: 400 }
+      )
     }
 
-    // Build new user profile
-    try {
-      console.log('🟡 Getting token balance for:', walletAddress);
-      const [tokenBalance, farcasterProfile] = await Promise.all([
-        getTokenBalance(
-          walletAddress.toLowerCase(), 
-          process.env.TOKEN_ADDRESS!
-        ).then(result => {
-          console.log('🟢 Token balance result:', result);
-          return result;
-        }).catch(error => {
-          console.error('🔴 Token balance error:', error);
-          return { tokenBalances: [{ tokenBalance: '0' }] };
-        }),
-        getFarcasterProfile(walletAddress)
-      ]);
+    const normalizedAddress = wallet_address.toLowerCase()
 
-      const userData = {
-        wallet_address: walletAddress,
-        privy_id: privyId,
-        token_balance: tokenBalance.tokenBalances?.[0]?.tokenBalance || '0',
-        updated_at: new Date().toISOString(),
-        last_active: new Date().toISOString(),
-        ...(farcasterProfile || {})
-      };
+    // Get external data
+    const [farcasterData, balance] = await Promise.all([
+      getFarcasterUser(wallet_address).catch(e => {
+        console.error('🔴 Farcaster error:', e)
+        return null
+      }),
+      getBillboardBalance(wallet_address).catch(e => {
+        console.error('🔴 Balance error:', e)
+        return 0
+      })
+    ])
 
-      // Cache in Redis
-      await redis.hset('users', { [walletAddress]: JSON.stringify(userData) });
-      await redis.lpush('users:queue', JSON.stringify(userData));
-
-      return NextResponse.json(userData);
-    } catch (error) {
-      console.error('Profile building error:', error);
-      throw error;
+    // Create user data
+    const userData = {
+      wallet_address: normalizedAddress,
+      privy_id,
+      farcaster_username: farcasterData?.farcaster_username || null,
+      farcaster_pfp: farcasterData?.farcaster_pfp || null,
+      token_balance: balance || 0,
+      last_active: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     }
+
+    // Store in Redis hash
+    await redis.hset('users', {
+      [normalizedAddress]: JSON.stringify(userData)
+    });
+
+    // Queue for Supabase
+    await redis.rpush('supabase:users:queue', JSON.stringify(userData));
+
+    // Trigger queue processing
+    await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
+      method: 'POST',
+      headers: { 
+        'x-cron-secret': process.env.CRON_SECRET || '',
+        'origin': process.env.NEXT_PUBLIC_APP_URL || ''
+      }
+    });
+
+    return NextResponse.json(userData)
   } catch (error) {
-    console.error('Profile check error:', error);
-    return NextResponse.json({ error: 'Failed to check profile' }, { status: 500 });
+    console.error('🔴 Top level error:', error)
+    return NextResponse.json({ error: 'Failed to check profile' }, { status: 500 })
   }
 } 
