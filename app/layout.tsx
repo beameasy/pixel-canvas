@@ -29,7 +29,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
         onLogout={logout}
         userAddress={user?.wallet?.address}
       />
-      <div className="relative z-10">
+      <div>
         {children}
       </div>
     </>
@@ -38,6 +38,7 @@ function AppContent({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
+    // Initial connection check
     const timer = setTimeout(() => {
       if (!pusherManager.isConnected()) {
         console.log('🔄 Layout: Initial connection check failed, requesting reconnect');
@@ -45,7 +46,35 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       }
     }, 2000);
 
-    return () => clearTimeout(timer);
+    // Handle visibility change (tab focus/blur, sleep/wake)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('🔄 Layout: Page became visible, checking connection');
+        if (!pusherManager.isConnected()) {
+          console.log('🔌 Layout: Connection lost, attempting to reconnect');
+          pusherManager.reconnect();
+        }
+      }
+    };
+
+    // Handle online/offline events
+    const handleOnline = () => {
+      console.log('🌐 Layout: Browser came online, checking connection');
+      if (!pusherManager.isConnected()) {
+        console.log('🔌 Layout: Reconnecting after coming online');
+        pusherManager.reconnect();
+      }
+    };
+
+    // Add event listeners
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('online', handleOnline);
+    };
   }, []);
 
   return (

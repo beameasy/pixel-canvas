@@ -172,7 +172,7 @@ export function ShareCanvas() {
 
       {previewUrl && (
         <div 
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-[9999]"
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               URL.revokeObjectURL(previewUrl);
@@ -180,7 +180,7 @@ export function ShareCanvas() {
             }
           }}
         >
-          <div className="bg-gray-800 p-4 rounded-lg max-w-md w-full mx-4">
+          <div className="bg-gray-800 p-4 rounded-lg max-w-md w-full mx-4 relative z-[10000]">
             <img src={previewUrl} alt="Canvas preview" className="w-full rounded mb-4" />
             <div className="flex flex-col gap-4">
               <div className="flex justify-center gap-2">

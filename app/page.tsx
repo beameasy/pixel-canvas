@@ -81,6 +81,27 @@ export default function Home() {
     }
   };
 
+  // Use Promise.all for parallel fetches
+  const fetchInitialData = async () => {
+    try {
+      const [historyResponse, tickerResponse] = await Promise.all([
+        fetch('/api/pixels/history?limit=6'),
+        fetch('/api/ticker')
+      ]);
+      
+      // Process responses in parallel
+      const [history, ticker] = await Promise.all([
+        historyResponse.json(),
+        tickerResponse.json()
+      ]);
+      
+      return { history, ticker };
+    } catch (error) {
+      console.error('Failed to fetch initial data:', error);
+      return { history: [], ticker: null };
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-800 overflow-y-auto">
       <main className="w-full max-w-[1200px] mx-auto p-1 flex flex-col items-center">
