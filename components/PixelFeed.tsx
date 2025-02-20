@@ -26,7 +26,7 @@ function LiveTimeAgo({ date }: { date: Date }) {
       else setTimeAgoText(`${Math.floor(seconds / 86400)}d`);
     };
 
-    updateTime(); // Initial update
+    updateTime();
     const timer = setInterval(updateTime, 1000);
     return () => clearInterval(timer);
   }, [date]);
@@ -34,18 +34,62 @@ function LiveTimeAgo({ date }: { date: Date }) {
   return <span>{timeAgoText}</span>;
 }
 
+function PlacementMessage({ placement }: { placement: PixelPlacement }) {
+  return (
+    <motion.span
+      initial={{ scale: 1 }}
+      animate={{ scale: [1, 1.02, 1] }}
+      transition={{ duration: 0.2 }}
+    >
+      <LiveTimeAgo date={new Date(placement.placed_at)} />{' '}
+      <a 
+        href={placement.farcaster_username 
+          ? `https://warpcast.com/${placement.farcaster_username}`
+          : `https://basescan.org/address/${placement.wallet_address}`
+        }
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`${
+          placement.farcaster_username ? "text-purple-400 hover:text-purple-300" : "text-blue-400 hover:text-blue-300"
+        }`}
+      >
+        {placement.farcaster_username ? 
+          `@${placement.farcaster_username}` : 
+          `${placement.wallet_address.slice(0, 4)}...${placement.wallet_address.slice(-4)}`
+        }
+      </a>
+      {` at `}
+      <span style={{ color: placement.color }}>({placement.x}, {placement.y})</span>
+    </motion.span>
+  );
+}
+
 export default function PixelFeed() {
   const [placements, setPlacements] = useState<PixelPlacement[]>([]);
 
   useEffect(() => {
+    let mounted = true;
+
     const handlePixelPlaced = (data: { pixel: PixelPlacement }) => {
-      setPlacements(prev => [data.pixel, ...prev].slice(0, 3));
+      if (!mounted) return;
+      setPlacements(prev => [data.pixel, ...prev].slice(0, 6));
     };
 
     const fetchInitialData = async () => {
+      if (!mounted) return;
       try {
-        const response = await fetch('/api/pixels/history?limit=3');
+        const response = await fetch('/api/pixels/history?limit=6', {
+          cache: 'no-cache',
+          headers: {
+            'Cache-Control': 'no-cache'
+          }
+        });
+        
+        if (!response.ok) throw new Error('Failed to fetch');
+        
         const history = await response.json();
+        if (!mounted) return;
+        
         const recentPixels = history
           .map((pixel: string | PixelPlacement) => 
             typeof pixel === 'string' ? JSON.parse(pixel) : pixel
@@ -56,58 +100,47 @@ export default function PixelFeed() {
       }
     };
 
-    // Subscribe to events
-    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
-    pusherManager.subscribe('subscription_succeeded', fetchInitialData);
-
-    // Initial data fetch
     fetchInitialData();
-
+    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+    
     return () => {
+      mounted = false;
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
-      pusherManager.unsubscribe('subscription_succeeded', fetchInitialData);
     };
   }, []);
 
   return (
-    <div className="w-full max-w-[600px] mx-auto mb-1 font-mono text-[10px] sm:text-xs flex flex-col items-center h-16">
+    <div className="w-full max-w-[600px] mx-auto font-mono text-[10px] sm:text-xs flex flex-col items-center h-16">
       <AnimatePresence>
-        {placements.map((placement, index) => (
-          <motion.div
-            key={placement.id}
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1 - index * 0.2, y: index * 20 }}
-            exit={{ opacity: 0, y: 60 }}
-            transition={{ duration: 0.2 }}
-            className="text-slate-300 whitespace-nowrap px-2 absolute"
-          >
-            <motion.span
-              initial={{ scale: 1 }}
-              animate={{ scale: [1, 1.02, 1] }}
+        {Array.from({ length: Math.ceil(placements.length / 2) }).map((_, rowIndex) => {
+          const leftPlacement = placements[rowIndex * 2];
+          const rightPlacement = placements[rowIndex * 2 + 1];
+          
+          return (
+            <motion.div
+              key={leftPlacement.id}
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1 - rowIndex * 0.2, y: rowIndex * 16 }}
+              exit={{ opacity: 0, y: 60 }}
               transition={{ duration: 0.2 }}
+              className="text-slate-300 whitespace-nowrap px-2 absolute"
             >
-              <LiveTimeAgo date={new Date(placement.placed_at)} />{' '}
-              <a 
-                href={placement.farcaster_username 
-                  ? `https://warpcast.com/${placement.farcaster_username}`
-                  : `https://basescan.org/address/${placement.wallet_address}`
-                }
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`${
-                  placement.farcaster_username ? "text-purple-400 hover:text-purple-300" : "text-blue-400 hover:text-blue-300"
-                }`}
+              <motion.div
+                initial={{ scale: 1, rotate: 0 }}
+                animate={{ scale: [1, 1.05, 1], rotate: [0, -1, 1, 0] }}
+                transition={{ duration: 0.5 }}
               >
-                {placement.farcaster_username ? 
-                  `@${placement.farcaster_username}` : 
-                  `${placement.wallet_address.slice(0, 4)}...${placement.wallet_address.slice(-4)}`
-                }
-              </a>
-              {` at `}
-              <span className="text-emerald-400">({placement.x}, {placement.y})</span>
-            </motion.span>
-          </motion.div>
-        ))}
+                <PlacementMessage placement={leftPlacement} />
+                {rightPlacement && (
+                  <>
+                    <span className="text-slate-400">, </span>
+                    <PlacementMessage placement={rightPlacement} />
+                  </>
+                )}
+              </motion.div>
+            </motion.div>
+          );
+        })}
       </AnimatePresence>
     </div>
   );
