@@ -5,6 +5,7 @@ import { usePrivy, useWallets, getAccessToken } from '@privy-io/react-auth';
 import { Minimap } from './MiniMap';
 import { useFarcasterUser } from '@/components/farcaster/hooks/useFarcasterUser';
 import { getCanvasChannel } from '@/lib/client/pusher';
+import { debounce } from 'lodash';
 
 declare global {
   interface Window {
@@ -511,25 +512,24 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
   // Modify the placePixel function to use optimistic updates
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
-      // Optimistically update the UI immediately
+      // Optimistic update
       const newPixel: PixelData = {
         color,
         wallet_address: address,
         farcaster_username: userProfile?.farcaster_username || null,
         farcaster_pfp: userProfile?.farcaster_pfp || null,
         placed_at: new Date().toISOString(),
-        token_balance: 0
+        token_balance: 0  // Start with 0
       };
 
-      // Update local state and redraw
+      // Optimistic local update
       setPixels(prev => {
         const newPixels = new Map(prev);
         newPixels.set(`${x},${y}`, newPixel);
         return newPixels;
       });
-      drawSinglePixel(x, y, color);
 
-      // Then send to server
+      // Send to server
       const response = await fetch('/api/pixels', {
         method: 'POST',
         headers: {
@@ -537,28 +537,28 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
           'x-wallet-address': address,
           'x-privy-token': (await getAccessToken()) || ''
         },
-        body: JSON.stringify({
-          x,
-          y,
-          color
-        })
+        body: JSON.stringify({ x, y, color })
       });
 
-      if (!response.ok) {
-        const data = await response.json();
-        console.log('Response error:', { status: response.status, data });
-        setFlashMessage(data.error || 'Failed to place pixel');
-        
-        // Revert the optimistic update on error
+      if (!response.ok) throw new Error('Failed to place pixel');
+      
+      // Update with server response data
+      const data = await response.json();
+      if (data.success) {
+        // Update the pixel with server data including token balance
         setPixels(prev => {
           const newPixels = new Map(prev);
-          newPixels.delete(`${x},${y}`);
+          newPixels.set(`${x},${y}`, {
+            ...newPixel,
+            token_balance: data.pixel?.token_balance || 0,
+            placed_at: data.pixel?.placed_at || newPixel.placed_at
+          });
           return newPixels;
         });
       }
 
-      lastPlacementRef.current = Date.now(); // Record placement time
-      onMousePosChange(null); // Hide tooltip immediately after placement
+      lastPlacementRef.current = Date.now();
+      onMousePosChange(null);
     } catch (error) {
       console.error('Failed to place pixel:', error);
       setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
@@ -641,6 +641,15 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     const cleanHex = hex.replace('0x', '').replace(/^0+/, '');
     return BigInt('0x' + cleanHex).toString();
   };
+
+  const debouncedFetchProfile = useCallback(
+    debounce(async (address: string) => {
+      const response = await fetch(`/api/farcaster?address=${address}`);
+      const data = await response.json();
+      setUserProfile(data);
+    }, 500),
+    []
+  );
 
   useEffect(() => {
     if (user?.id && address) {

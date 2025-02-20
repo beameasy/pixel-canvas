@@ -110,7 +110,7 @@ export default function PixelFeed() {
   }, []);
 
   return (
-    <div className="w-full max-w-[600px] mx-auto font-mono text-[10px] sm:text-xs flex flex-col items-center h-16">
+    <div className="w-full max-w-[600px] mx-auto mb-1 font-mono text-[10px] sm:text-xs flex flex-col items-center h-24">
       <AnimatePresence>
         {Array.from({ length: Math.ceil(placements.length / 2) }).map((_, rowIndex) => {
           const leftPlacement = placements[rowIndex * 2];
@@ -120,7 +120,7 @@ export default function PixelFeed() {
             <motion.div
               key={leftPlacement.id}
               initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1 - rowIndex * 0.2, y: rowIndex * 16 }}
+              animate={{ opacity: 1 - rowIndex * 0.2, y: rowIndex * 20 }}
               exit={{ opacity: 0, y: 60 }}
               transition={{ duration: 0.2 }}
               className="text-slate-300 whitespace-nowrap px-2 absolute"

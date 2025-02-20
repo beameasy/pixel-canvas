@@ -6,9 +6,23 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
+    const startTime = performance.now();
+    
+    // Check Redis cache first
+    const cached = await redis.get('ticker:top_users');
+    if (cached) {
+      console.log('✅ Ticker cache hit:', {
+        timeMs: performance.now() - startTime
+      });
+      return NextResponse.json(JSON.parse(cached), {
+        headers: {
+          'Cache-Control': 'public, s-maxage=5, stale-while-revalidate=30'
+        }
+      });
+    }
+
     // Get last hour's timestamp
     const hourAgo = Date.now() - (60 * 60 * 1000);
-    console.log('🕒 Fetching pixels since:', new Date(hourAgo));
     
     // Get pixels placed in the last hour
     const recentPixels = await redis.zrange(
@@ -17,20 +31,17 @@ export async function GET() {
       '+inf',
       { byScore: true }
     );
-    console.log('📊 Found pixels:', recentPixels.length);
 
     // Count pixels per user
     const userCounts: Record<string, number> = {};
     const userDetails: Record<string, any> = {};
 
     for (const pixelStr of recentPixels) {
-      // Parse the JSON string into an object
       const pixel = typeof pixelStr === 'string' ? JSON.parse(pixelStr) : pixelStr;
       const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
       
       userCounts[wallet_address] = (userCounts[wallet_address] || 0) + 1;
       
-      // Store user details if we haven't already
       if (!userDetails[wallet_address]) {
         userDetails[wallet_address] = {
           wallet_address,
@@ -49,9 +60,21 @@ export async function GET() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
-    console.log('📊 Returning top users:', topUsers);
-    return NextResponse.json(topUsers);
-    
+    // Cache for 5 seconds
+    await redis.set('ticker:top_users', JSON.stringify(topUsers), {
+      ex: 5 // 5 second expiration
+    });
+
+    console.log('📊 Fresh ticker data:', {
+      users: topUsers.length,
+      timeMs: performance.now() - startTime
+    });
+
+    return NextResponse.json(topUsers, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=5, stale-while-revalidate=30'
+      }
+    });
   } catch (error) {
     console.error('❌ Ticker error:', error);
     return NextResponse.json([], { status: 500 });

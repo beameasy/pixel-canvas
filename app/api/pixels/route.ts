@@ -10,36 +10,56 @@ import { triggerPusherEvent } from '@/lib/server/pusher';
 const ONE_HOUR = 60 * 60 * 1000; // 1 hour in milliseconds
 
 // Get canvas state
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    console.time('fetch-pixels');
+    const startTime = performance.now();
     
-    // Try to get cached result first
-    const cached = await redis.get('canvas:pixels:cached');
-    if (cached) {
-      console.log('🔵 Using cached result');
-      console.timeEnd('fetch-pixels');
-      // Return cached data directly if it's an object, parse only if it's a string
-      return NextResponse.json(typeof cached === 'string' ? JSON.parse(cached) : cached);
+    // Check Redis cache first with proper type checking
+    const cached = await redis.get('pixels:transformed');
+    if (cached && typeof cached === 'string') {
+      console.log('✅ Pixels cache hit:', {
+        timeMs: performance.now() - startTime
+      });
+      return NextResponse.json(JSON.parse(cached), {
+        headers: {
+          'Cache-Control': 'public, s-maxage=5, stale-while-revalidate=30',
+          'Vary': 'Accept-Encoding'
+        }
+      });
     }
 
-    // If no cache, get from main storage (HASH)
-    const allPixels = await redis.hgetall('canvas:pixels') || {};
+    // Get directly from canvas:pixels hash with proper error handling
+    const allPixels = await redis.hgetall('canvas:pixels');
+    if (!allPixels) {
+      console.log('⚠️ No pixels found');
+      return NextResponse.json([]);
+    }
+
+    // Transform with proper type checking
     const pixels = Object.entries(allPixels).map(([key, value]) => {
       const [x, y] = key.split(',');
       const data = typeof value === 'string' ? JSON.parse(value) : value;
       return { ...data, x: parseInt(x), y: parseInt(y) };
     });
 
-    // Store processed result in cache
-    await redis.set('canvas:pixels:cached', JSON.stringify(pixels), {
-      ex: 2  // Expire after 2 seconds
+    // Cache the transformed data
+    await redis.set('pixels:transformed', JSON.stringify(pixels), {
+      ex: 5 // 5 second expiration
     });
 
-    console.timeEnd('fetch-pixels');
-    return NextResponse.json(pixels);
+    console.log('🔄 Fresh pixels data:', {
+      count: pixels.length,
+      timeMs: performance.now() - startTime
+    });
+
+    return NextResponse.json(pixels, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=5, stale-while-revalidate=30',
+        'Vary': 'Accept-Encoding'
+      }
+    });
   } catch (error) {
-    console.error('❌ Fetch error:', error);
+    console.error('❌ Pixels fetch error:', error);
     return NextResponse.json([], { status: 500 });
   }
 }
