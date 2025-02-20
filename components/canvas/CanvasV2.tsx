@@ -3,12 +3,8 @@
 import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback, memo } from 'react';
 import { usePrivy, useWallets, getAccessToken } from '@privy-io/react-auth';
 import { Minimap } from './MiniMap';
-import { pusherClient } from '@/lib/client/pusher';
 import { useFarcasterUser } from '@/components/farcaster/hooks/useFarcasterUser';
-import Controls from '@/components/layout/Controls';
-import { AdminTools } from '@/components/admin/AdminTools';
-import { isAdmin } from '@/components/admin/utils';
-// import SideColorPicker from './SideColorPicker';
+import { getCanvasChannel } from '@/lib/client/pusher';
 
 declare global {
   interface Window {
@@ -209,22 +205,24 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     loadPixels();
 
     // Subscribe to Pusher updates
-    const channel = pusherClient.subscribe('canvas');
+    const channel = getCanvasChannel();
     
-    channel.bind('pixel-placed', (data: any) => {
+    const handlePixelPlaced = (data: any) => {
       const { pixel } = data;
-      if (!pixel) return;
-      drawSinglePixel(pixel.x, pixel.y, pixel.color);
-      setPixels(prev => {
-        const newPixels = new Map(prev);
-        newPixels.set(`${pixel.x},${pixel.y}`, pixel);
-        return newPixels;
-      });
-    });
+      if (pixel) {
+        drawSinglePixel(pixel.x, pixel.y, pixel.color);
+        setPixels(prev => {
+          const newPixels = new Map(prev);
+          newPixels.set(`${pixel.x},${pixel.y}`, pixel);
+          return newPixels;
+        });
+      }
+    };
+
+    channel.bind('pixel-placed', handlePixelPlaced);
 
     return () => {
-      channel.unbind_all();
-      channel.unsubscribe();
+      channel.unbind('pixel-placed', handlePixelPlaced);
     };
   }, []); // Remove drawSinglePixel from dependencies
 

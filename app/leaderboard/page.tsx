@@ -107,7 +107,7 @@ export default function Leaderboard() {
                             href={`https://warpcast.com/${user.farcaster_username}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-purple-400 hover:text-purple-300"
+                            className="text-purple-400 hover:text-purple-300 font-mono text-xs"
                           >
                             @{user.farcaster_username}
                           </a>
@@ -116,7 +116,7 @@ export default function Leaderboard() {
                             href={`https://basescan.org/address/${user.wallet_address}`}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-blue-400 hover:text-blue-300 font-mono"
+                            className="text-blue-400 hover:text-blue-300 font-mono text-xs"
                           >
                             {user.wallet_address.slice(0, 6)}...{user.wallet_address.slice(-4)}
                           </a>

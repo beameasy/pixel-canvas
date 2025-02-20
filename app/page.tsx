@@ -6,6 +6,7 @@ import Controls from '@/components/layout/Controls';
 import { usePrivy } from '@privy-io/react-auth';
 import { useState, useRef, useEffect } from 'react';
 import { AdminTools } from '@/components/admin/AdminTools';
+import PixelFeed from '@/components/PixelFeed';
 
 export default function Home() {
   const { authenticated, user } = usePrivy();
@@ -82,10 +83,12 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-slate-800 overflow-y-auto">
-      <main className="w-full max-w-[1200px] mx-auto p-4 flex flex-col items-center">
-        <div className="mb-4 flex justify-center">
+      <main className="w-full max-w-[1200px] mx-auto p-1 flex flex-col items-center">
+        <div className="mb-0">
           <PixelLogo />
         </div>
+        
+        <PixelFeed />
         
         <div className="flex flex-col items-center">
           {!authenticated && showError && (

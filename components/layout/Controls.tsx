@@ -32,7 +32,7 @@ export default function Controls({ onResetView, selectedColor, onColorSelect, fl
   }, []);
 
   return (
-    <div className="mb-2 sm:mb-4 flex flex-col gap-2 sm:gap-4 w-full max-w-[600px]">
+    <div className="mb-3 sm:mb-4 flex flex-col gap-2 sm:gap-4 w-full max-w-[600px]">
       {flashMessage && (
         <div className="flex justify-center">
           <div className="font-mono text-[#FFD700] text-xs sm:text-sm">
@@ -50,7 +50,7 @@ export default function Controls({ onResetView, selectedColor, onColorSelect, fl
         <ShareCanvas />
         <ShareCanvasV2 canvasRef={canvasRef} />
       </div>
-      <div className="w-full">
+      <div className="w-full mb-1 sm:mb-2">
         <SideColorPicker 
           selectedColor={selectedColor}
           onColorSelect={onColorSelect}

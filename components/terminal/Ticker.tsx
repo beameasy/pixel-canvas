@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import Image from 'next/image';
-import { pusherClient } from '@/lib/client/pusher';  // Note: direct import
+import { pusherManager } from '@/lib/client/pusherManager';
 
 interface TopUser {
   wallet_address: string;
@@ -11,7 +11,7 @@ interface TopUser {
   farcaster_pfp: string | null;
 }
 
-const DEBUG = true;
+const DEBUG = false; // Reduce debug logging
 
 export default function Ticker() {
   if (DEBUG) console.log('🎯 Ticker component rendering');
@@ -19,58 +19,11 @@ export default function Ticker() {
   const [users, setUsers] = useState<TopUser[]>([]);
   const [lastEvent, setLastEvent] = useState<string>('');
 
-  // Simplified Pusher subscription
-  useEffect(() => {
-    console.log('🔄 Ticker: Setting up Pusher subscription');
-    
-    const channel = pusherClient.subscribe('canvas');
-    
-    channel.bind('pixel-placed', (data: { pixel: any; topUsers: TopUser[] }) => {
-      console.log('📨 Ticker: Received update:', {
-        usersCount: data.topUsers?.length,
-        firstUser: data.topUsers?.[0]
-      });
-      
-      // Directly update state with new top users data
-      if (Array.isArray(data.topUsers) && data.topUsers.length > 0) {
-        setUsers(data.topUsers);
-        setLastEvent('Updated: ' + new Date().toISOString());
-      }
-    });
+  // Add connection state
+  const [isConnected, setIsConnected] = useState(false);
 
-    // Initial data fetch
-    fetch('/api/ticker')
-      .then(res => res.json())
-      .then(data => {
-        console.log('📈 Ticker: Initial data loaded:', {
-          count: data?.length,
-          firstUser: data?.[0]
-        });
-        if (Array.isArray(data) && data.length > 0) {
-          setUsers(data);
-        }
-      })
-      .catch(error => {
-        console.error('❌ Ticker: Failed to load initial data:', error);
-      });
-
-    return () => {
-      console.log('🔄 Ticker: Cleaning up Pusher subscription');
-      channel.unbind_all();
-      channel.unsubscribe();
-    };
-  }, []);
-
-  // Add debug logging for state updates
-  useEffect(() => {
-    console.log('👥 Ticker: Users state updated:', {
-      count: users.length,
-      firstUser: users[0],
-      lastEvent
-    });
-  }, [users, lastEvent]);
-
-  const formatUser = (user: TopUser, index: number) => (
+  // Memoize the formatUser function
+  const formatUser = useCallback((user: TopUser, index: number) => (
     <span 
       key={`${user.wallet_address}-${user.count}-${index}`}
       className="inline-flex items-center whitespace-nowrap gap-2"
@@ -112,7 +65,57 @@ export default function Ticker() {
       </span>
       <span className="text-white mx-4">◆</span>
     </span>
-  );
+  ), []); // No dependencies since it doesn't use any external values
+
+  useEffect(() => {
+    const handlePixelPlaced = (data: { topUsers: TopUser[] }) => {
+      if (DEBUG) console.log('📊 Received pixel-placed event:', data);
+      if (Array.isArray(data.topUsers) && data.topUsers.length > 0) {
+        setUsers(data.topUsers);
+      }
+    };
+
+    const handleSubscriptionSuccess = () => {
+      if (DEBUG) console.log('✅ Subscription succeeded, fetching initial data');
+      fetchInitialData();
+    };
+
+    const fetchInitialData = async () => {
+      try {
+        const response = await fetch('/api/ticker');
+        const data = await response.json();
+        if (Array.isArray(data) && data.length > 0) {
+          setUsers(data);
+          if (DEBUG) console.log('📊 Initial data loaded:', data);
+        }
+      } catch (error) {
+        console.error('Failed to load initial ticker data:', error);
+      }
+    };
+
+    // Initial data fetch immediately
+    fetchInitialData();
+
+    // Subscribe to events
+    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+    pusherManager.subscribe('pusher:subscription_succeeded', handleSubscriptionSuccess);
+
+    return () => {
+      pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
+      pusherManager.unsubscribe('pusher:subscription_succeeded', handleSubscriptionSuccess);
+    };
+  }, []);
+
+  // Debug logging only when needed
+  useEffect(() => {
+    if (DEBUG) {
+      console.log('👥 Ticker: Users state updated:', {
+        count: users.length,
+        firstUser: users[0],
+        lastEvent
+      });
+    }
+  }, [users, lastEvent]);
 
   if (!users || users.length === 0) {
     return null;
@@ -120,9 +123,7 @@ export default function Ticker() {
 
   return (
     <div className="w-full overflow-hidden whitespace-nowrap text-xs">
-      <div 
-        className="h-10 overflow-hidden whitespace-nowrap py-1 text-xs relative w-full"
-      >
+      <div className="h-6 overflow-hidden whitespace-nowrap py-1 text-xs relative w-full">
         <div className="ticker-content">
           <div className="inline-block">
             {users.map((user, i) => formatUser(user, i))}

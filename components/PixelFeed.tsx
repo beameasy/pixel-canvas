@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { pusherClient } from '@/lib/client/pusher';
+import { pusherManager } from '@/lib/client/pusherManager';
 import { timeAgo } from '@/lib/timeAgo';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -17,43 +17,43 @@ interface PixelPlacement {
 
 export default function PixelFeed() {
   const [placements, setPlacements] = useState<PixelPlacement[]>([]);
-  const [, setForceUpdate] = useState(0);
-  
+
   useEffect(() => {
-    // Fetch initial placements from history sorted set
-    fetch('/api/pixels/history')
-      .then(res => res.json())
-      .then(history => {
-        // Take last 3 entries and parse them
+    const handlePixelPlaced = (data: { pixel: PixelPlacement }) => {
+      setPlacements(prev => [data.pixel, ...prev].slice(0, 3));
+    };
+
+    const fetchInitialData = async () => {
+      try {
+        const response = await fetch('/api/pixels/history');
+        const history = await response.json();
         const recentPixels = history
           .slice(-3)
-          .map((pixel: string | PixelPlacement) => typeof pixel === 'string' ? JSON.parse(pixel) : pixel)
+          .map((pixel: string | PixelPlacement) => 
+            typeof pixel === 'string' ? JSON.parse(pixel) : pixel
+          )
           .reverse();
         setPlacements(recentPixels);
-      })
-      .catch(error => {
+      } catch (error) {
         console.error('Failed to fetch recent pixels:', error);
-      });
+      }
+    };
 
-    const timer = setInterval(() => {
-      setForceUpdate(n => n + 1);
-    }, 1000);
+    // Subscribe to events
+    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+    pusherManager.subscribe('subscription_succeeded', fetchInitialData);
 
-    const channel = pusherClient.subscribe('canvas');
-    
-    channel.bind('pixel-placed', (data: { pixel: PixelPlacement }) => {
-      setPlacements(prev => [data.pixel, ...prev].slice(0, 3));
-    });
+    // Initial data fetch
+    fetchInitialData();
 
     return () => {
-      clearInterval(timer);
-      channel.unbind_all();
-      channel.unsubscribe();
+      pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
+      pusherManager.unsubscribe('subscription_succeeded', fetchInitialData);
     };
   }, []);
 
   return (
-    <div className="w-full max-w-[600px] mx-auto mb-2 sm:mb-4 font-mono text-[10px] sm:text-xs flex flex-col items-center h-20">
+    <div className="w-full max-w-[600px] mx-auto mb-1 font-mono text-[10px] sm:text-xs flex flex-col items-center h-16">
       <AnimatePresence>
         {placements.map((placement, index) => (
           <motion.div

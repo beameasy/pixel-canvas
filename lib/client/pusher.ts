@@ -1,37 +1,49 @@
 import Pusher from 'pusher-js';
 
-// Enable Pusher logging
-Pusher.logToConsole = true;
+// Create a single, persistent Pusher instance
+const pusherClient = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
+  cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+  forceTLS: true,
+});
 
-let pusherInstance: Pusher | null = null;
-
-function getPusherClient() {
-  if (!pusherInstance) {
-    console.log('🔵 Creating new Pusher instance');
-
-    pusherInstance = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
-      cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
-      forceTLS: true,
-      enabledTransports: ['ws', 'wss']
-    });
-
-    // Debug connection state
-    pusherInstance.connection.bind('state_change', (states: {
-      previous: string;
-      current: string;
-    }) => {
-      console.log('🔵 Pusher state changed:', states.previous, '->', states.current);
-    });
-
-    pusherInstance.connection.bind('connected', () => {
-      console.log('🟢 Connected with socket ID:', pusherInstance?.connection.socket_id);
-    });
+// Export a function to get or create a channel subscription
+export function getCanvasChannel() {
+  const channelName = 'canvas';
+  let channel = pusherClient.channel(channelName);
+  
+  if (!channel) {
+    channel = pusherClient.subscribe(channelName);
+    console.log('📡 New canvas channel subscription');
+  } else {
+    console.log('♻️ Reusing existing canvas channel');
   }
-  return pusherInstance;
+  
+  return channel;
 }
 
-// Create and export a single instance
-export const pusherClient = getPusherClient();
+// Export the client as well in case we need it elsewhere
+export { pusherClient };
+
+// Basic connection logging
+pusherClient.connection.bind('connected', () => {
+  console.log('✅ Pusher connected');
+});
+
+pusherClient.connection.bind('disconnected', () => {
+  console.log('❌ Pusher disconnected');
+});
+
+if (typeof window !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      console.log('🔄 Page became visible - checking Pusher connection');
+      if (pusherClient.connection.state !== 'connected') {
+        console.log('🔄 Reconnecting Pusher');
+        pusherClient.connect();
+      }
+    }
+  });
+}
 
 // Log configuration
 console.log('🔵 Pusher client initialized:', {

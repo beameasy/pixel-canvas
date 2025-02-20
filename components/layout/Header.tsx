@@ -14,6 +14,7 @@ interface HeaderProps {
 export default function Header({ authenticated, onLogin, onLogout, userAddress }: HeaderProps) {
   const [showDisconnect, setShowDisconnect] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   const handleLogin = async () => {
     try {
@@ -27,32 +28,34 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
   };
 
   return (
-    <header className="sticky top-0 z-40 bg-transparent h-16">
+    <header className="sticky top-0 z-[60] bg-slate-800/95 backdrop-blur-sm">
       <Ticker />
-      <div className="w-full max-w-[1200px] mx-auto flex flex-col sm:flex-row justify-between items-center px-4 pt-0 pb-2 space-y-2 sm:space-y-0">
-        <nav className="flex items-center space-x-64 sm:space-x-96">
-          <Link 
-            href="/" 
-            className="text-[#FFD700] hover:text-[#FFC700] font-mono whitespace-nowrap transition-colors"
+      <div className="w-full max-w-[1200px] mx-auto flex items-center justify-between px-4 py-4">
+        <div className="flex items-center">
+          {/* Hamburger Menu Button - Only visible on mobile */}
+          <button 
+            onClick={() => setIsMenuOpen(!isMenuOpen)}
+            className="md:hidden text-[#FFD700] p-2"
           >
-            Canvas
-          </Link>
-          <Link 
-            href="/logs" 
-            className="text-[#FFD700] hover:text-[#FFC700] font-mono whitespace-nowrap transition-colors"
-          >
-            Logs
-          </Link>
-          <Link 
-            href="/leaderboard" 
-            className="text-[#FFD700] hover:text-[#FFC700] font-mono whitespace-nowrap transition-colors"
-          >
-            Leaderboard
-          </Link>
-        </nav>
-        
-        {/* Wallet connection */}
-        <div className="w-full sm:w-auto flex justify-center sm:justify-end">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              {isMenuOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              )}
+            </svg>
+          </button>
+
+          {/* Desktop Navigation */}
+          <nav className="hidden md:flex items-center space-x-6 ml-6">
+            <Link href="/" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Canvas</Link>
+            <Link href="/logs" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Logs</Link>
+            <Link href="/leaderboard" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Leaderboard</Link>
+          </nav>
+        </div>
+
+        {/* Wallet Connection - Always visible */}
+        <div className="flex items-center">
           {!authenticated ? (
             <button
               onClick={handleLogin}
@@ -79,6 +82,35 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
           )}
         </div>
       </div>
+
+      {/* Mobile Navigation Menu */}
+      {isMenuOpen && (
+        <div className="absolute top-full left-0 right-0 bg-slate-800 border-t border-slate-700 md:hidden">
+          <nav className="flex flex-col p-4 space-y-4">
+            <Link 
+              href="/" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Canvas
+            </Link>
+            <Link 
+              href="/logs" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Logs
+            </Link>
+            <Link 
+              href="/leaderboard" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Leaderboard
+            </Link>
+          </nav>
+        </div>
+      )}
     </header>
   );
 } 

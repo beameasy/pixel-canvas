@@ -23,6 +23,7 @@
     "@urql/core": "^5.1.0",
     "alchemy-sdk": "^3.5.2",
     "dotenv": "^16.4.7",
+    "framer-motion": "^12.4.5",
     "graphql": "^16.10.0",
     "graphql-request": "^7.1.2",
     "ioredis": "^5.5.0",
@@ -41,10 +42,11 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "autoprefixer": "^10.4.20",
     "eslint": "^9",
     "eslint-config-next": "15.1.6",
-    "postcss": "^8",
-    "tailwindcss": "^3.4.1",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^3.4.17",
     "ts-node": "^10.9.2",
     "typescript": "^5"
   }

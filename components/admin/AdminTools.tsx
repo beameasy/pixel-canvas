@@ -15,7 +15,7 @@ export const AdminTools: React.FC<AdminToolsProps> = ({ onBanWallet, onClearSele
   const [selectionMode, setSelectionMode] = useState(false);
   const [walletToBan, setWalletToBan] = useState('');
   const [banReason, setBanReason] = useState('');
-  const [isMinimized, setIsMinimized] = useState(false);
+  const [isMinimized, setIsMinimized] = useState(true);
 
   if (!isAdmin(user?.wallet?.address)) {
     return null;
@@ -37,10 +37,10 @@ export const AdminTools: React.FC<AdminToolsProps> = ({ onBanWallet, onClearSele
 
   return (
     <div 
-      className={`fixed transition-all duration-200 bg-black/80 p-2 rounded-lg border border-purple-500 z-50 text-sm ${
+      className={`fixed transition-all duration-200 bg-black/80 p-2 rounded-lg border border-purple-500 z-[55] text-sm ${
         isMinimized 
-          ? 'top-4 right-4 w-auto' // Minimized: small and in corner
-          : 'top-4 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[640px]' // Full: centered
+          ? 'top-20 right-4 w-auto' // Moved down below header
+          : 'top-20 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[640px]'
       }`}
     >
       <div className="flex justify-between items-center mb-2">
