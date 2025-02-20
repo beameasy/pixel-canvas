@@ -39,7 +39,6 @@ export default function Home() {
 
   const handleClearSelection = async (coordinates: Array<{x: number, y: number}>) => {
     try {
-      console.log('Clearing pixels:', coordinates);
       const response = await fetch('/api/admin/clear-pixels', {
         method: 'POST',
         headers: {
@@ -50,19 +49,15 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Clear request failed:', errorData);
-        throw new Error(errorData.error || 'Failed to clear pixels');
+        throw new Error('Failed to clear pixels');
       }
     } catch (error) {
       console.error('Error clearing pixels:', error);
-      throw error;
     }
   };
 
   const handleBanWallet = async (walletAddress: string, reason: string) => {
     try {
-      console.log('Sending ban request:', { walletAddress, reason });
       const response = await fetch('/api/admin/ban', {
         method: 'POST',
         headers: {
@@ -70,7 +65,7 @@ export default function Home() {
           'x-wallet-address': user?.wallet?.address || '',
         },
         body: JSON.stringify({ 
-          wallet: walletAddress,
+          wallet_address: walletAddress,
           reason,
           banned_at: new Date().toISOString(),
           banned_by: user?.wallet?.address
@@ -78,20 +73,17 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Ban request failed:', errorData);
-        throw new Error(errorData.error || 'Failed to ban wallet');
+        throw new Error('Failed to ban wallet');
       }
     } catch (error) {
       console.error('Error banning wallet:', error);
-      throw error;
     }
   };
 
   return (
     <div className="min-h-screen bg-slate-800 overflow-y-auto">
-      <main className="w-full max-w-[1200px] mx-auto p-4 pt-8 flex flex-col items-center">
-        <div className="mb-8 flex justify-center">
+      <main className="w-full max-w-[1200px] mx-auto p-4 flex flex-col items-center">
+        <div className="mb-4 flex justify-center">
           <PixelLogo />
         </div>
         

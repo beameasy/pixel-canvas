@@ -27,10 +27,10 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
   };
 
   return (
-    <header className="sticky top-0 z-40">
+    <header className="sticky top-0 z-40 bg-transparent h-16">
       <Ticker />
-      <div className="mt-8 w-full max-w-[1200px] mx-auto flex flex-col sm:flex-row justify-between items-center px-3 sm:px-4 py-2 gap-2 sm:gap-0">
-        <nav className="flex items-center gap-4 sm:gap-6 text-xs sm:text-sm overflow-x-auto w-full sm:w-auto">
+      <div className="w-full max-w-[1200px] mx-auto flex flex-col sm:flex-row justify-between items-center px-4 pt-0 pb-2 space-y-2 sm:space-y-0">
+        <nav className="flex items-center space-x-64 sm:space-x-96">
           <Link 
             href="/" 
             className="text-[#FFD700] hover:text-[#FFC700] font-mono whitespace-nowrap transition-colors"
@@ -50,6 +50,7 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
             Leaderboard
           </Link>
         </nav>
+        
         {/* Wallet connection */}
         <div className="w-full sm:w-auto flex justify-center sm:justify-end">
           {!authenticated ? (

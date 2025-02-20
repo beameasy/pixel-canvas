@@ -65,18 +65,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           {/* Header stack */}
           <div className="relative">
             {/* Ticker layer */}
-            <div className="h-10">
+            <div>
               <Ticker />
             </div>
             
             {/* Navigation layer */}
-            <div className="h-16 bg-slate-800">
+            <div className="bg-slate-800">
               <Navigation />
             </div>
           </div>
 
-          {/* Content area */}
-          <div className="mt-[104px] relative z-10">
+          {/* Content area - removed margin */}
+          <div className="relative z-10">
             {children}
           </div>
         </Providers>

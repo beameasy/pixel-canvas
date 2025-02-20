@@ -1,110 +1,146 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { supabaseClient } from '@/lib/supabaseClient';
-import Image from 'next/image';
+import { useState, useEffect } from 'react';
 
-interface LeaderboardUser {
+interface LeaderboardEntry {
   wallet_address: string;
-  pixel_count: number;
   farcaster_username: string | null;
   farcaster_pfp: string | null;
-  last_active: string;
+  total_pixels: number;
+  pixels_24h: number;
+  pixels_1h: number;
+  favorite_color: string;
 }
 
-export default function LeaderboardPage() {
-  const [users, setUsers] = useState<LeaderboardUser[]>([]);
+export default function Leaderboard() {
+  const [users, setUsers] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [totalPixels, setTotalPixels] = useState(0);
+  const [sortField, setSortField] = useState<keyof LeaderboardEntry>('total_pixels');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
+    const fetchLeaderboard = async () => {
+      try {
+        const response = await fetch('/api/leaderboard');
+        const data = await response.json();
+        setUsers(Array.isArray(data) ? data : []);
+      } catch (error) {
+        console.error('Failed to fetch leaderboard:', error);
+        setUsers([]);
+      } finally {
+        setLoading(false);
+      }
+    };
+
     fetchLeaderboard();
   }, []);
 
-  async function fetchLeaderboard() {
-    setLoading(true);
-    
-    const { data, error } = await supabaseClient
-      .from('leaderboard')
-      .select('*')
-      .order('pixel_count', { ascending: false });
-    
-    if (error) {
-      console.error('Error fetching leaderboard:', error);
-      setLoading(false);
-      return;
+  const handleSort = (field: keyof LeaderboardEntry) => {
+    if (field === sortField) {
+      setSortDirection(current => current === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortField(field);
+      setSortDirection('desc');
     }
-
-    if (!data || data.length === 0) {
-      console.log('No leaderboard data found');
-      setLoading(false);
-      return;
-    }
-
-    console.log('Fetched leaderboard data:', data.length, 'entries');
-    setUsers(data);
-    setTotalPixels(data.reduce((sum: number, user) => sum + user.pixel_count, 0));
-    setLoading(false);
-  }
+  };
 
   if (loading) {
-    return <div className="text-white">Loading leaderboard...</div>;
+    return <div className="min-h-screen bg-slate-800 p-4 text-white">Loading...</div>;
   }
 
   return (
-    <div className="mt-20">
-      <main className="w-full max-w-[1000px] mx-auto p-5">
-        <h1 className="text-[#FFD700] font-mono text-2xl text-center mb-8">
-          Pixels Placed, Ranked
-        </h1>
-        <div className="text-center mb-4 text-gray-400">
-          Total Pixels Placed: <span className="text-[#FFD700]">{totalPixels.toLocaleString()}</span>
+    <div className="min-h-screen bg-slate-800 p-4">
+      <div className="max-w-[1200px] mx-auto">
+        <h1 className="text-[#FFD700] text-2xl font-mono mb-6">Leaderboard</h1>
+        
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-slate-700">
+                <th className="p-4 text-slate-400 font-mono">#</th>
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                    onClick={() => handleSort('wallet_address')}>
+                  User
+                </th>
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                    onClick={() => handleSort('total_pixels')}>
+                  Total Pixels
+                </th>
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                    onClick={() => handleSort('pixels_24h')}>
+                  Last 24h
+                </th>
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                    onClick={() => handleSort('pixels_1h')}>
+                  Last Hour
+                </th>
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                    onClick={() => handleSort('favorite_color')}>
+                  Favorite Color
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {users
+                .sort((a, b) => {
+                  const aValue = a[sortField] ?? 0;
+                  const bValue = b[sortField] ?? 0;
+                  if (sortDirection === 'asc') {
+                    return aValue > bValue ? 1 : -1;
+                  }
+                  return aValue < bValue ? 1 : -1;
+                })
+                .map((user, index) => (
+                  <tr key={user.wallet_address} className="border-b border-slate-700">
+                    <td className="p-4 font-mono text-slate-400">{index + 1}</td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-2">
+                        {user.farcaster_pfp && (
+                          <img 
+                            src={user.farcaster_pfp} 
+                            alt="" 
+                            className="w-6 h-6 rounded-full"
+                          />
+                        )}
+                        {user.farcaster_username ? (
+                          <a 
+                            href={`https://warpcast.com/${user.farcaster_username}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-purple-400 hover:text-purple-300"
+                          >
+                            @{user.farcaster_username}
+                          </a>
+                        ) : (
+                          <a 
+                            href={`https://basescan.org/address/${user.wallet_address}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 font-mono"
+                          >
+                            {user.wallet_address.slice(0, 6)}...{user.wallet_address.slice(-4)}
+                          </a>
+                        )}
+                      </div>
+                    </td>
+                    <td className="p-4 font-mono text-emerald-400">{user.total_pixels}</td>
+                    <td className="p-4 font-mono text-emerald-400">{user.pixels_24h}</td>
+                    <td className="p-4 font-mono text-emerald-400">{user.pixels_1h}</td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-2">
+                        <div 
+                          className="w-4 h-4 rounded-sm border border-slate-700"
+                          style={{ backgroundColor: user.favorite_color }}
+                        />
+                        <span className="font-mono text-slate-300">{user.favorite_color}</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
         </div>
-        <div className="flex justify-center">
-          <div className="w-full max-w-xl font-mono text-xs sm:text-sm px-4 sm:px-8">
-            {users.map((user, index) => (
-              <div 
-                key={user.farcaster_username || user.wallet_address}
-                className="flex items-center gap-4 py-3 border-b border-slate-700"
-              >
-                <div className="flex items-center gap-4 min-w-0">
-                  <span className="text-[#FFD700] w-6 sm:w-8 flex-shrink-0">{index + 1}.</span>
-                  <div className="flex items-center gap-2 min-w-0">
-                    {user.farcaster_pfp && (
-                      <Image
-                        src={user.farcaster_pfp}
-                        alt=""
-                        width={20}
-                        height={20}
-                        className="rounded-full flex-shrink-0"
-                      />
-                    )}
-                    <a 
-                      href={user.farcaster_username 
-                        ? `https://warpcast.com/${user.farcaster_username}`
-                        : `https://basescan.org/address/${user.wallet_address}`
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-400 hover:text-blue-300 truncate"
-                    >
-                      {user.farcaster_username ? 
-                        `@${user.farcaster_username}` : 
-                        `${user.wallet_address.slice(0, 6)}...${user.wallet_address.slice(-4)}`
-                      }
-                    </a>
-                  </div>
-                </div>
-                <div className="flex-grow border-b border-dotted border-slate-700 mx-4" />
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <span className="text-[#FFD700] font-bold">{user.pixel_count}</span>
-                  <span className="text-gray-400">pixels</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </main>
+      </div>
     </div>
   );
 }

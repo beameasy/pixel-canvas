@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import Image from 'next/image';
-import { pusherClient } from '@/lib/client/pusher';
+import { pusherClient } from '@/lib/client/pusher';  // Note: direct import
 
 interface TopUser {
   wallet_address: string;
@@ -11,40 +11,68 @@ interface TopUser {
   farcaster_pfp: string | null;
 }
 
-export default function Ticker() {
-  const [users, setUsers] = useState<TopUser[]>([]);
-  const tickerRef = useRef<HTMLDivElement>(null);
-  const contentRef = useRef<HTMLDivElement>(null);
-  const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+const DEBUG = true;
 
-  // Pusher subscription and data fetching
+export default function Ticker() {
+  if (DEBUG) console.log('🎯 Ticker component rendering');
+  
+  const [users, setUsers] = useState<TopUser[]>([]);
+  const [lastEvent, setLastEvent] = useState<string>('');
+
+  // Simplified Pusher subscription
   useEffect(() => {
+    console.log('🔄 Ticker: Setting up Pusher subscription');
+    
     const channel = pusherClient.subscribe('canvas');
     
     channel.bind('pixel-placed', (data: { pixel: any; topUsers: TopUser[] }) => {
-      if (Array.isArray(data.topUsers)) {
+      console.log('📨 Ticker: Received update:', {
+        usersCount: data.topUsers?.length,
+        firstUser: data.topUsers?.[0]
+      });
+      
+      // Directly update state with new top users data
+      if (Array.isArray(data.topUsers) && data.topUsers.length > 0) {
         setUsers(data.topUsers);
+        setLastEvent('Updated: ' + new Date().toISOString());
       }
     });
 
+    // Initial data fetch
     fetch('/api/ticker')
       .then(res => res.json())
       .then(data => {
-        if (Array.isArray(data)) {
+        console.log('📈 Ticker: Initial data loaded:', {
+          count: data?.length,
+          firstUser: data?.[0]
+        });
+        if (Array.isArray(data) && data.length > 0) {
           setUsers(data);
         }
       })
-      .catch(error => console.error('❌ Error fetching ticker:', error));
+      .catch(error => {
+        console.error('❌ Ticker: Failed to load initial data:', error);
+      });
 
     return () => {
+      console.log('🔄 Ticker: Cleaning up Pusher subscription');
       channel.unbind_all();
       channel.unsubscribe();
     };
   }, []);
 
+  // Add debug logging for state updates
+  useEffect(() => {
+    console.log('👥 Ticker: Users state updated:', {
+      count: users.length,
+      firstUser: users[0],
+      lastEvent
+    });
+  }, [users, lastEvent]);
+
   const formatUser = (user: TopUser, index: number) => (
     <span 
-      key={`${user.wallet_address}-${index}`}
+      key={`${user.wallet_address}-${user.count}-${index}`}
       className="inline-flex items-center whitespace-nowrap gap-2"
     >
       {index === 0 && (
@@ -93,39 +121,39 @@ export default function Ticker() {
   return (
     <div className="w-full overflow-hidden whitespace-nowrap text-xs">
       <div 
-        ref={tickerRef} 
         className="h-10 overflow-hidden whitespace-nowrap py-1 text-xs relative w-full"
       >
-        <div className="ticker-content" ref={contentRef}>
-          {users.map((user, i) => formatUser(user, i))}
+        <div className="ticker-content">
+          <div className="inline-block">
+            {users.map((user, i) => formatUser(user, i))}
+          </div>
         </div>
         <style jsx>{`
           .ticker-content {
             display: inline-block;
             white-space: nowrap;
             position: relative;
-            transform: translateX(100vw);
-            animation: ticker 35s linear infinite;
-            animation-play-state: running;
-            will-change: transform;
-            animation-fill-mode: forwards;
+            animation: ticker 15s linear infinite;
           }
 
           @keyframes ticker {
-            to {
+            0% {
+              transform: translateX(100vw);
+            }
+            100% {
               transform: translateX(-100%);
             }
           }
 
           @media (min-width: 1024px) {
             .ticker-content {
-              animation-duration: 45s;
+              animation-duration: 35s;
             }
           }
 
           @media (min-width: 1536px) {
             .ticker-content {
-              animation-duration: 55s;
+              animation-duration: 45s;
             }
           }
         `}</style>

@@ -9,9 +9,10 @@ interface SelectionOverlayProps {
   pixelSize: number;
   viewX: number;
   viewY: number;
+  onPixelsCleared?: (coordinates: Array<{x: number, y: number}>) => void;
 }
 
-export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({ enabled, onClearSelection, scale, pixelSize, viewX, viewY }) => {
+export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({ enabled, onClearSelection, scale, pixelSize, viewX, viewY, onPixelsCleared }) => {
   const [selecting, setSelecting] = useState(false);
   const [startCoord, setStartCoord] = useState<{x: number, y: number} | null>(null);
   const [currentCoord, setCurrentCoord] = useState<{x: number, y: number} | null>(null);
@@ -77,11 +78,16 @@ export const SelectionOverlay: React.FC<SelectionOverlayProps> = ({ enabled, onC
     
     console.log('Attempting to clear pixels:', selectedCoords.map(coord => 
       `(${coord.x}, ${coord.y})`
-    ).join(', ')); // More readable coordinate logging
+    ).join(', '));
     
     try {
       await onClearSelection(selectedCoords);
       console.log('Clear request completed for coordinates:', selectedCoords);
+      
+      if (onPixelsCleared) {
+        onPixelsCleared(selectedCoords);
+      }
+      
       setSelectedCoords(null);
       setStartCoord(null);
       setCurrentCoord(null);

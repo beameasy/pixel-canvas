@@ -1,81 +1,46 @@
 import { NextResponse } from 'next/server';
 import { redis } from '@/lib/server/redis';
-import { getAccessToken } from '@privy-io/react-auth';
-import { getAdminClient } from '../_lib/supabaseAdmin';
 import { authenticateUser } from '../_lib/authenticateUser';
 import { getFarcasterUser } from '@/lib/farcaster';
 import { getBillboardBalance, getTokensNeededForUsdAmount } from '@/app/api/_lib/subgraphClient';
 import { pusher } from '@/lib/server/pusher';
 import { v4 as uuidv4 } from 'uuid';
+import { triggerPusherEvent } from '@/lib/server/pusher';
 
 const ONE_HOUR = 60 * 60 * 1000; // 1 hour in milliseconds
 
 // Get canvas state
 export async function GET() {
   try {
-    console.log('🔵 Fetching canvas state');
+    console.time('fetch-pixels');
     
-    // Check Redis connection
-    const isConnected = await redis.ping();
-    console.log('🔵 Redis connection:', isConnected);
-    
-    // Check if key exists and get type
-    const keyType = await redis.type('canvas:pixels');
-    console.log('🔵 Canvas pixels type:', keyType);
-    
-    if (keyType !== 'hash') {
-      console.log('🔵 Invalid key type or missing key, returning empty array');
-      return NextResponse.json([]);
+    // Try to get cached result first
+    const cached = await redis.get('canvas:pixels:cached');
+    if (cached) {
+      console.log('🔵 Using cached result');
+      console.timeEnd('fetch-pixels');
+      // Return cached data directly if it's an object, parse only if it's a string
+      return NextResponse.json(typeof cached === 'string' ? JSON.parse(cached) : cached);
     }
 
-    // Get length first
-    const length = await redis.hlen('canvas:pixels');
-    console.log('🔵 Hash length:', length);
-
-    // Use scan instead of hgetall
-    let cursor = 0;
-    const pixelMap = new Map();
-    
-    do {
-      const [newCursor, batch] = await redis.hscan('canvas:pixels', cursor, {
-        count: 1000
-      });
-      cursor = Number(newCursor);
-      
-      console.log('🔵 Scanning batch:', {
-        cursor,
-        batchSize: batch.length / 2
-      });
-
-      // Process batch
-      for (let i = 0; i < batch.length; i += 2) {
-        const key = batch[i];
-        const value = batch[i + 1];
-        try {
-          const [x, y] = String(key).split(',');
-          const pixelData = typeof value === 'string' ? JSON.parse(value) : value;
-          pixelMap.set(key, {
-            ...pixelData,
-            x: parseInt(x),
-            y: parseInt(y)
-          });
-        } catch (err) {
-          console.error('❌ Error processing pixel:', { key, error: err });
-        }
-      }
-    } while (cursor !== 0);
-
-    const pixelsArray = Array.from(pixelMap.values());
-    
-    console.log('🔵 Processed pixels:', {
-      count: pixelsArray.length,
-      expected: length
+    // If no cache, get from main storage (HASH)
+    const allPixels = await redis.hgetall('canvas:pixels') || {};
+    const pixels = Object.entries(allPixels).map(([key, value]) => {
+      const [x, y] = key.split(',');
+      const data = typeof value === 'string' ? JSON.parse(value) : value;
+      return { ...data, x: parseInt(x), y: parseInt(y) };
     });
 
-    return NextResponse.json(pixelsArray);
+    // Store processed result in cache
+    await redis.set('canvas:pixels:cached', JSON.stringify(pixels), {
+      ex: 2  // Expire after 2 seconds
+    });
+
+    console.timeEnd('fetch-pixels');
+    return NextResponse.json(pixels);
   } catch (error) {
-    console.error('❌ Error fetching pixels:', error);
-    return NextResponse.json([], { status: 200 });
+    console.error('❌ Fetch error:', error);
+    return NextResponse.json([], { status: 500 });
   }
 }
 
@@ -108,28 +73,6 @@ async function getBillboardPrice(): Promise<number> {
   const billboardPriceInEth = parseFloat(data.token.derivedETH);
   const ethPriceInUsd = parseFloat(data.bundle.ethPrice);
   return billboardPriceInEth * ethPriceInUsd;
-}
-
-async function getTokensForUsdAmount(usdAmount: number): Promise<number> {
-  const billboardPriceInUsd = await getBillboardPrice();
-  return usdAmount / billboardPriceInUsd;
-}
-
-// Add pixel metadata functions
-async function getPixelMetadata(x: number, y: number): Promise<PixelMetadata | null> {
-  const key = `${x},${y}`;
-  const data = await redis.hget('canvas:pixels:metadata', key);
-  if (!data) return null;
-  
-  // If it's a string, parse it, otherwise return as is
-  return typeof data === 'string' ? JSON.parse(data) : data;
-}
-
-async function setPixelMetadata(x: number, y: number, metadata: PixelMetadata): Promise<void> {
-  const key = `${x},${y}`;
-  await redis.hset('canvas:pixels:metadata', {
-    [key]: JSON.stringify(metadata)
-  });
 }
 
 // Add balance caching helper
@@ -250,16 +193,27 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Please connect your wallet to place pixels' }, { status: 401 });
     }
 
-    const { x, y, color, lockDuration } = await request.json();
     const walletAddress = session.wallet_address.toLowerCase();
     
-    // Check if wallet is banned
-    const isBanned = await redis.sismember('banned:wallets:permanent', walletAddress);
+    // Get banned wallets and flatten the array
+    const bannedWallets = await redis.smembers('banned:wallets:permanent');
+    const flattenedBannedWallets = bannedWallets.flat();
+    
+    // Ban check with explicit logging
+    const isBanned = flattenedBannedWallets.includes(walletAddress);
+    console.log('🔍 Ban check:', {
+      walletAddress,
+      isBanned,
+      bannedWallets: flattenedBannedWallets
+    });
+
     if (isBanned) {
       console.log(`🚫 Blocked attempt from banned wallet: ${walletAddress}`);
-      return NextResponse.json({ error: 'Wallet is banned' }, { status: 403 });
+      return NextResponse.json({ error: 'Your wallet has been banned' }, { status: 403 });
     }
 
+    const { x, y, color, lockDuration } = await request.json();
+    
     // Get cached user data with proper type checking
     const cachedUserData = await redis.hget('users', walletAddress);
     let userInfo = typeof cachedUserData === 'string' ? 
@@ -366,11 +320,48 @@ export async function POST(request: Request) {
 
     console.log('🔵 Emitting top users (last hour):', topUsers);
 
-    // Emit through Pusher with complete data
-    await pusher.trigger('canvas', 'pixel-placed', {
+    // Before emitting, log the exact data structure
+    console.log('🔵 About to emit Pusher event:', {
+      pixel: pixelData,
+      topUsers,  // Log both pixel and topUsers
+      sampleUser: topUsers[0]
+    });
+
+    // Right before the Pusher trigger
+    console.log('🚀 SERVER: About to emit pixel-placed event:', {
+      hasPixel: !!pixelData,
+      pixelCoords: pixelData ? `${pixelData.x},${pixelData.y}` : null,
+      topUsersCount: topUsers.length,
+      firstUser: topUsers[0]
+    });
+
+    // Inside POST handler, after calculating topUsers
+    console.log('🔵 About to emit top users:', {
+      usersCount: topUsers.length,
+      firstUser: topUsers[0]
+    });
+
+    // Inside your POST handler, right before emitting the event
+    console.log('🔍 DEBUG: About to emit event with:', {
+      channel: 'canvas',
+      event: 'pixel-placed',
+      topUsers: topUsers.map(u => ({
+        address: u.wallet_address,
+        count: u.count
+      }))
+    });
+
+    // Use the wrapper function
+    const success = await triggerPusherEvent('canvas', 'pixel-placed', {
       pixel: pixelData,
       topUsers
     });
+
+    if (!success) {
+      console.error('❌ Failed to emit Pusher event');
+    } else {
+      console.log('✅ Successfully emitted Pusher event');
+    }
 
     // Queue pixel data
     await redis.rpush('supabase:pixels:queue', JSON.stringify(pixelData))

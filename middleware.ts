@@ -6,6 +6,9 @@ export default async function middleware(req: NextRequest) {
   console.log('🔒 Middleware running for path:', req.nextUrl.pathname)
   const res = NextResponse.next()
   const supabase = createMiddlewareClient({ req, res })
+
+  // Remove Redis check from middleware since it's not supported in Edge
+  // Ban check will happen in the API route instead
   
   const { data: { session }, error } = await supabase.auth.getSession()
   if (error) {

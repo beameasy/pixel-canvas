@@ -24,7 +24,8 @@ export async function GET() {
     const userDetails: Record<string, any> = {};
 
     for (const pixelStr of recentPixels) {
-      const pixel = pixelStr as any;
+      // Parse the JSON string into an object
+      const pixel = typeof pixelStr === 'string' ? JSON.parse(pixelStr) : pixelStr;
       const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
       
       userCounts[wallet_address] = (userCounts[wallet_address] || 0) + 1;
@@ -48,6 +49,7 @@ export async function GET() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
+    console.log('📊 Returning top users:', topUsers);
     return NextResponse.json(topUsers);
     
   } catch (error) {

@@ -5,6 +5,8 @@ import { getAdminClient } from '../../_lib/supabaseAdmin';
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
+const BATCH_SIZE = 1000;
+
 export async function POST(request: Request) {
   console.log('🔄 Cache rebuild triggered');
   
@@ -18,31 +20,41 @@ export async function POST(request: Request) {
   try {
     const supabase = getAdminClient();
     
-    // 1. Rebuild canvas pixels
-    const { data: pixels, error: pixelsError } = await supabase
+    // 1. Get total pixel count
+    const { count: totalPixels, error: countError } = await supabase
       .from('pixels')
-      .select('*')
-      .order('placed_at', { ascending: true });
-      
-    if (pixelsError) throw pixelsError;
+      .select('*', { count: 'exact', head: true });
 
+    if (countError) throw countError;
+    
+    console.log(`📊 Total pixels to process: ${totalPixels}`);
+    
+    // 2. Process pixels in batches
     const canvasPixels: Record<string, any> = {};
-    const canvasHistory: Array<[number, string]> = [];
-    pixels?.forEach(pixel => {
-      const key = `${pixel.x},${pixel.y}`;
-      canvasPixels[key] = JSON.stringify(pixel);
-      // Convert placed_at to timestamp for score
-      const score = new Date(pixel.placed_at).getTime();
-      canvasHistory.push([score, JSON.stringify(pixel)]);
-    });
+    const historyEntries: Array<{score: number, member: string}> = [];
+    
+    for (let i = 0; i < totalPixels!; i += BATCH_SIZE) {
+      console.log(`🔄 Processing pixels batch ${i / BATCH_SIZE + 1}/${Math.ceil(totalPixels! / BATCH_SIZE)}`);
+      
+      const { data: pixels, error: pixelsError } = await supabase
+        .from('pixels')
+        .select('*')
+        .order('placed_at', { ascending: true })
+        .range(i, i + BATCH_SIZE - 1);
+        
+      if (pixelsError) throw pixelsError;
 
-    // Build history entries
-    const historyEntries = pixels?.map(pixel => ({
-      score: new Date(pixel.placed_at).getTime(),
-      member: JSON.stringify(pixel)
-    })) || [];
+      pixels?.forEach(pixel => {
+        const key = `${pixel.x},${pixel.y}`;
+        canvasPixels[key] = JSON.stringify(pixel);
+        historyEntries.push({
+          score: new Date(pixel.placed_at).getTime(),
+          member: JSON.stringify(pixel)
+        });
+      });
+    }
 
-    // 2. Rebuild users cache
+    // 3. Rebuild users cache
     const { data: users, error: usersError } = await supabase
       .from('users')
       .select('*');
@@ -52,10 +64,7 @@ export async function POST(request: Request) {
     const usersCache: Record<string, any> = {};
     const usersFarcasterCache: Record<string, any> = {};
     users?.forEach(user => {
-      // Main users cache with wallet address as key
       usersCache[user.wallet_address] = JSON.stringify(user);
-      
-      // Farcaster cache with wallet_address as key
       if (user.farcaster_username) {
         usersFarcasterCache[user.wallet_address] = JSON.stringify({
           farcaster_username: user.farcaster_username,
@@ -64,7 +73,7 @@ export async function POST(request: Request) {
       }
     });
 
-    // 3. Rebuild banned wallets cache
+    // 4. Rebuild banned wallets cache
     const { data: bannedWallets, error: bannedError } = await supabase
       .from('banned_wallets')
       .select('wallet_address')
@@ -80,33 +89,46 @@ export async function POST(request: Request) {
       );
     }
 
-    // 4. Update all Redis caches
+    // 5. Update Redis caches in batches
     console.log('💾 Updating Redis caches...');
+    
+    // Clear existing caches
     await Promise.all([
-      // Canvas pixels hash
       redis.del('canvas:pixels'),
-      redis.hset('canvas:pixels', canvasPixels),
-      // Canvas history
       redis.del('canvas:history'),
-      // Add each history entry individually
-      ...historyEntries.map(entry => 
-        redis.zadd('canvas:history', { score: entry.score, member: entry.member })
-      ),
-      // Users caches
-      redis.hset('users', usersCache),
-      redis.hset('users:farcaster', usersFarcasterCache),
-      // Clear any processing flags
       redis.del('queue_processing_active'),
-      // Clear queues
       redis.del('supabase:pixels:queue'),
       redis.del('supabase:users:queue'),
       redis.del('canvas:pixels:queue'),
       redis.del('users:queue'),
       redis.del('pending:bans')
     ]);
+
+    // Update canvas pixels in batches
+    const pixelEntries = Object.entries(canvasPixels);
+    for (let i = 0; i < pixelEntries.length; i += BATCH_SIZE) {
+      const batch = Object.fromEntries(pixelEntries.slice(i, i + BATCH_SIZE));
+      await redis.hset('canvas:pixels', batch);
+    }
+
+    // Update history in much smaller batches to avoid size limit
+    const HISTORY_BATCH_SIZE = 250; // Much smaller batch for history entries
+    for (let i = 0; i < historyEntries.length; i += HISTORY_BATCH_SIZE) {
+      const batch = historyEntries.slice(i, i + HISTORY_BATCH_SIZE);
+      console.log(`🔄 Processing history batch ${i / HISTORY_BATCH_SIZE + 1}/${Math.ceil(historyEntries.length / HISTORY_BATCH_SIZE)}`);
+      
+      // Process each entry individually to avoid large batch requests
+      for (const entry of batch) {
+        await redis.zadd('canvas:history', { score: entry.score, member: entry.member });
+      }
+    }
+
+    // Update user caches
+    await redis.hset('users', usersCache);
+    await redis.hset('users:farcaster', usersFarcasterCache);
     
     console.log('✅ Cache rebuild complete:', {
-      pixels: pixels?.length,
+      pixels: totalPixels,
       users: users?.length,
       farcasterUsers: Object.keys(usersFarcasterCache).length,
       bannedWallets: bannedWallets?.length
@@ -114,7 +136,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ 
       success: true, 
-      pixelsProcessed: pixels?.length,
+      pixelsProcessed: totalPixels,
       usersProcessed: users?.length,
       farcasterUsersProcessed: Object.keys(usersFarcasterCache).length
     });

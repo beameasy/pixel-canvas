@@ -23,9 +23,25 @@ const getRedisConfig = () => {
 }
 
 const config = getRedisConfig()
-console.log('🔵 Redis URL:', config.url)
+console.log('🔵 Initializing Redis connection:', config.url)
 
+// Create Redis instance with health check
 export const redis = new Redis({
   url: config.url,
-  token: config.token,
-}) 
+  token: config.token
+})
+
+// Add health check function
+export async function checkRedisConnection() {
+  try {
+    await redis.ping()
+    console.log('✅ Redis connection healthy')
+    return true
+  } catch (error) {
+    console.error('❌ Redis connection error:', error)
+    return false
+  }
+}
+
+// Initial health check
+checkRedisConnection() 
