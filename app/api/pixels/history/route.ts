@@ -1,25 +1,27 @@
 import { redis } from '@/lib/server/redis';
 import { NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    console.log('🔍 Fetching pixel history...');
+    const searchParams = request.nextUrl.searchParams;
+    const limit = parseInt(searchParams.get('limit') || '10');
     
-    // Get most recent pixels (last 10)
-    const recentPixels = await redis.zrange(
+    console.log('🔍 Fetching pixel history...', { limit });
+    
+    const pixels = await redis.zrange(
       'canvas:history',
       0,
-      9,
+      limit - 1,
       { rev: true }
     );
     
     console.log('📊 Found pixels:', {
-      count: recentPixels.length,
-      sample: recentPixels.slice(0, 1)
+      count: pixels.length,
+      sample: pixels.slice(0, 1)
     });
     
-    // Return in reverse order to show newest first
-    return NextResponse.json(recentPixels.reverse());
+    return NextResponse.json(pixels);
   } catch (error) {
     console.error('❌ Failed to fetch pixel history:', error);
     return NextResponse.json([], { status: 500 });

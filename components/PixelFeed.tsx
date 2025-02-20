@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { pusherManager } from '@/lib/client/pusherManager';
-import { timeAgo } from '@/lib/timeAgo';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface PixelPlacement {
@@ -15,6 +14,26 @@ interface PixelPlacement {
   placed_at: string;
 }
 
+function LiveTimeAgo({ date }: { date: Date }) {
+  const [timeAgoText, setTimeAgoText] = useState('');
+
+  useEffect(() => {
+    const updateTime = () => {
+      const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+      if (seconds < 60) setTimeAgoText(`${seconds}s`);
+      else if (seconds < 3600) setTimeAgoText(`${Math.floor(seconds / 60)}m`);
+      else if (seconds < 86400) setTimeAgoText(`${Math.floor(seconds / 3600)}h`);
+      else setTimeAgoText(`${Math.floor(seconds / 86400)}d`);
+    };
+
+    updateTime(); // Initial update
+    const timer = setInterval(updateTime, 1000);
+    return () => clearInterval(timer);
+  }, [date]);
+
+  return <span>{timeAgoText}</span>;
+}
+
 export default function PixelFeed() {
   const [placements, setPlacements] = useState<PixelPlacement[]>([]);
 
@@ -25,14 +44,12 @@ export default function PixelFeed() {
 
     const fetchInitialData = async () => {
       try {
-        const response = await fetch('/api/pixels/history');
+        const response = await fetch('/api/pixels/history?limit=3');
         const history = await response.json();
         const recentPixels = history
-          .slice(-3)
           .map((pixel: string | PixelPlacement) => 
             typeof pixel === 'string' ? JSON.parse(pixel) : pixel
-          )
-          .reverse();
+          );
         setPlacements(recentPixels);
       } catch (error) {
         console.error('Failed to fetch recent pixels:', error);
@@ -69,13 +86,23 @@ export default function PixelFeed() {
               animate={{ scale: [1, 1.02, 1] }}
               transition={{ duration: 0.2 }}
             >
-              {`${timeAgo(new Date(placement.placed_at))} `}
-              <span className={placement.farcaster_username ? "text-purple-400" : "text-blue-400"}>
+              <LiveTimeAgo date={new Date(placement.placed_at)} />{' '}
+              <a 
+                href={placement.farcaster_username 
+                  ? `https://warpcast.com/${placement.farcaster_username}`
+                  : `https://basescan.org/address/${placement.wallet_address}`
+                }
+                target="_blank"
+                rel="noopener noreferrer"
+                className={`${
+                  placement.farcaster_username ? "text-purple-400 hover:text-purple-300" : "text-blue-400 hover:text-blue-300"
+                }`}
+              >
                 {placement.farcaster_username ? 
                   `@${placement.farcaster_username}` : 
                   `${placement.wallet_address.slice(0, 4)}...${placement.wallet_address.slice(-4)}`
                 }
-              </span>
+              </a>
               {` at `}
               <span className="text-emerald-400">({placement.x}, {placement.y})</span>
             </motion.span>

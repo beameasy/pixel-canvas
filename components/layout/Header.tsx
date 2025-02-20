@@ -15,6 +15,7 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
   const [showDisconnect, setShowDisconnect] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showTokenMenu, setShowTokenMenu] = useState(false);
 
   const handleLogin = async () => {
     try {
@@ -28,14 +29,14 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
   };
 
   return (
-    <header className="sticky top-0 z-[60] bg-slate-800/95 backdrop-blur-sm">
+    <header className="static bg-slate-800/95 backdrop-blur-sm border-b border-slate-700 relative z-[100]">
       <Ticker />
       <div className="w-full max-w-[1200px] mx-auto flex items-center justify-between px-4 py-4">
         <div className="flex items-center">
-          {/* Hamburger Menu Button - Only visible on mobile */}
+          {/* Hamburger Menu Button */}
           <button 
             onClick={() => setIsMenuOpen(!isMenuOpen)}
-            className="md:hidden text-[#FFD700] p-2"
+            className="md:hidden text-[#FFD700] p-2 relative z-[101]"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               {isMenuOpen ? (
@@ -51,11 +52,45 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
             <Link href="/" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Canvas</Link>
             <Link href="/logs" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Logs</Link>
             <Link href="/leaderboard" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Leaderboard</Link>
+            <Link href="/about" className="text-[#FFD700] hover:text-[#FFC700] font-mono">About</Link>
+            
+            {/* Token Dropdown */}
+            <div 
+              className="relative group"
+            >
+              <button className="text-[#FFD700] hover:text-[#FFC700] font-mono py-2">
+                $BILLBOARD
+              </button>
+              
+              {/* Invisible bridge to maintain hover */}
+              <div className="absolute w-full h-2 bottom-0 translate-y-full" />
+              
+              <div className="hidden group-hover:block absolute left-0 top-full pt-2 w-60 z-[102]">
+                <div className="bg-slate-800 border border-slate-700 rounded-md shadow-lg py-2">
+                  <a 
+                    href="https://basescan.org/address/0x0aB96f7A85f8480c0220296C3332488ce38D9818"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block px-4 py-2 text-sm font-mono text-blue-400 hover:bg-slate-700"
+                  >
+                    Contract Address
+                  </a>
+                  <a 
+                    href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block px-4 py-2 text-sm font-mono text-emerald-400 hover:bg-slate-700"
+                  >
+                    Trade $BILLBOARD on Clank.fun
+                  </a>
+                </div>
+              </div>
+            </div>
           </nav>
         </div>
 
-        {/* Wallet Connection - Always visible */}
-        <div className="flex items-center">
+        {/* Wallet Connection */}
+        <div className="flex items-center relative z-[101]">
           {!authenticated ? (
             <button
               onClick={handleLogin}
@@ -85,7 +120,7 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
 
       {/* Mobile Navigation Menu */}
       {isMenuOpen && (
-        <div className="absolute top-full left-0 right-0 bg-slate-800 border-t border-slate-700 md:hidden">
+        <div className="fixed top-[72px] left-0 right-0 bg-slate-800 border-t border-slate-700 md:hidden z-[99]">
           <nav className="flex flex-col p-4 space-y-4">
             <Link 
               href="/" 
@@ -108,6 +143,32 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
             >
               Leaderboard
             </Link>
+            <Link 
+              href="/about" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              About
+            </Link>
+            {/* Mobile Token Links */}
+            <div className="space-y-2 pl-2">
+              <a 
+                href="https://basescan.org/address/0x0aB96f7A85f8480c0220296C3332488ce38D9818"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block text-blue-400 hover:text-blue-300 font-mono text-sm"
+              >
+                $BILLBOARD Contract
+              </a>
+              <a 
+                href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block text-emerald-400 hover:text-emerald-300 font-mono text-sm"
+              >
+                Trade on Clank.fun
+              </a>
+            </div>
           </nav>
         </div>
       )}
