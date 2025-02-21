@@ -104,12 +104,14 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-slate-800 overflow-y-auto">
-      <main className="w-full max-w-[1200px] mx-auto p-1 flex flex-col items-center">
-        <div className="mb-0">
+      <main className="w-full max-w-[1200px] mx-auto p-1 flex flex-col items-center gap-1 py-1 sm:gap-2 sm:py-2">
+        <div>
           <PixelLogo />
         </div>
         
-        <PixelFeed />
+        <div className="mb-4 sm:mb-6">
+          <PixelFeed />
+        </div>
         
         <div className="flex flex-col items-center">
           {!authenticated && showError && (

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
-import { timeAgo } from '@/lib/timeAgo';
+import { timeAgo, formatNumber } from '@/lib/timeAgo';
 
 interface PixelPlacement {
   id: string;
@@ -13,6 +13,7 @@ interface PixelPlacement {
   farcaster_username: string | null;
   farcaster_pfp: string | null;
   placed_at: string;
+  token_balance: number;
 }
 
 export default function LogsPage() {
@@ -117,6 +118,10 @@ export default function LogsPage() {
                   </div>
                   
                   <span className="text-emerald-400">({placement.x}, {placement.y})</span>
+                  
+                  <span className="hidden md:inline text-amber-400">
+                    {formatNumber(placement.token_balance)} $BILLBOARD
+                  </span>
                   
                   <span className="text-slate-400">
                     {timeAgo(new Date(placement.placed_at))}

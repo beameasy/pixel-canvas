@@ -53,6 +53,7 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
             <Link href="/logs" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Logs</Link>
             <Link href="/leaderboard" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Leaderboard</Link>
             <Link href="/about" className="text-[#FFD700] hover:text-[#FFC700] font-mono">About</Link>
+            <Link href="/socials" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Socials</Link>
             
             {/* Token Dropdown */}
             <div 
@@ -149,6 +150,13 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
               onClick={() => setIsMenuOpen(false)}
             >
               About
+            </Link>
+            <Link 
+              href="/socials" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Socials
             </Link>
             {/* Mobile Token Links */}
             <div className="space-y-2 pl-2">
