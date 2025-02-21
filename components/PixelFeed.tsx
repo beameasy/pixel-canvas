@@ -66,6 +66,17 @@ function PlacementMessage({ placement }: { placement: PixelPlacement }) {
 
 export default function PixelFeed() {
   const [placements, setPlacements] = useState<PixelPlacement[]>([]);
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 640); // sm breakpoint
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -110,17 +121,14 @@ export default function PixelFeed() {
   }, []);
 
   return (
-    <div className="w-full max-w-[600px] mx-auto mb-1 font-mono text-[10px] sm:text-xs flex flex-col items-center h-24">
+    <div className="w-full max-w-[600px] mx-auto mb-1 font-mono text-[10px] sm:text-xs flex flex-col items-center h-16 sm:h-12">
       <AnimatePresence>
-        {Array.from({ length: Math.ceil(placements.length / 2) }).map((_, rowIndex) => {
-          const leftPlacement = placements[rowIndex * 2];
-          const rightPlacement = placements[rowIndex * 2 + 1];
-          
-          return (
+        {isMobile ? (
+          placements.map((placement, index) => (
             <motion.div
-              key={leftPlacement.id}
+              key={placement.id}
               initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1 - rowIndex * 0.2, y: rowIndex * 20 }}
+              animate={{ opacity: 1 - index * 0.2, y: index * 16 }}
               exit={{ opacity: 0, y: 60 }}
               transition={{ duration: 0.2 }}
               className="text-slate-300 whitespace-nowrap px-2 absolute"
@@ -130,17 +138,41 @@ export default function PixelFeed() {
                 animate={{ scale: [1, 1.05, 1], rotate: [0, -1, 1, 0] }}
                 transition={{ duration: 0.5 }}
               >
-                <PlacementMessage placement={leftPlacement} />
-                {rightPlacement && (
-                  <>
-                    <span className="text-slate-400">, </span>
-                    <PlacementMessage placement={rightPlacement} />
-                  </>
-                )}
+                <PlacementMessage placement={placement} />
               </motion.div>
             </motion.div>
-          );
-        })}
+          ))
+        ) : (
+          Array.from({ length: Math.ceil(placements.length / 2) }).map((_, rowIndex) => {
+            const leftPlacement = placements[rowIndex * 2];
+            const rightPlacement = placements[rowIndex * 2 + 1];
+            
+            return (
+              <motion.div
+                key={leftPlacement.id}
+                initial={{ opacity: 0, y: -20 }}
+                animate={{ opacity: 1 - rowIndex * 0.2, y: rowIndex * 16 }}
+                exit={{ opacity: 0, y: 60 }}
+                transition={{ duration: 0.2 }}
+                className="text-slate-300 whitespace-nowrap px-2 absolute"
+              >
+                <motion.div
+                  initial={{ scale: 1, rotate: 0 }}
+                  animate={{ scale: [1, 1.05, 1], rotate: [0, -1, 1, 0] }}
+                  transition={{ duration: 0.5 }}
+                >
+                  <PlacementMessage placement={leftPlacement} />
+                  {rightPlacement && (
+                    <>
+                      <span className="text-slate-400">, </span>
+                      <PlacementMessage placement={rightPlacement} />
+                    </>
+                  )}
+                </motion.div>
+              </motion.div>
+            );
+          })
+        )}
       </AnimatePresence>
     </div>
   );

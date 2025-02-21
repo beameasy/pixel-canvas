@@ -10,7 +10,7 @@ export async function GET() {
     
     // Check Redis cache first
     const cached = await redis.get('ticker:top_users');
-    if (cached) {
+    if (cached && typeof cached === 'string') {
       console.log('✅ Ticker cache hit:', {
         timeMs: performance.now() - startTime
       });

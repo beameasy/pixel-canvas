@@ -78,6 +78,9 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
   const [userProfile, setUserProfile] = useState<{
     farcaster_username: string | null;
     farcaster_pfp: string | null;
+    token_balance: number;
+    last_active?: string;
+    updated_at?: string;
   } | null>(null);
 
   // Calculate dynamic canvas size
@@ -112,6 +115,12 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
   const [selectionEnd, setSelectionEnd] = useState<{ x: number; y: number } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isAdminMode, setIsAdminMode] = useState(false);
+
+  // Modify the tooltip logging to only log when the pixel data actually changes
+  const [lastTooltipData, setLastTooltipData] = useState<string>('');
+
+  // Add a ref for the overlay canvas
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     const updateCanvasSize = () => {
@@ -209,15 +218,22 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     const channel = getCanvasChannel();
     
     const handlePixelPlaced = (data: any) => {
-      const { pixel } = data;
-      if (pixel) {
-        drawSinglePixel(pixel.x, pixel.y, pixel.color);
-        setPixels(prev => {
-          const newPixels = new Map(prev);
-          newPixels.set(`${pixel.x},${pixel.y}`, pixel);
-          return newPixels;
+      if (!data.pixel) return;
+
+      setPixels(prev => {
+        const newPixels = new Map(prev);
+        const key = `${data.pixel.x},${data.pixel.y}`;
+        
+        const existingPixel = prev.get(key);
+        const existingBalance = existingPixel?.token_balance;
+        
+        newPixels.set(key, {
+          ...data.pixel,
+          token_balance: existingBalance || userProfile?.token_balance || 0
         });
-      }
+        
+        return newPixels;
+      });
     };
 
     channel.bind('pixel-placed', handlePixelPlaced);
@@ -311,7 +327,32 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     return `${days}d`;
   };
 
-  // Update handleMouseMove
+  // Add this function to draw only the preview pixel
+  const drawPreviewPixel = useCallback((x: number, y: number) => {
+    const canvas = overlayCanvasRef.current;
+    const ctx = canvas?.getContext('2d');
+    if (!ctx || !canvas) return;
+
+    // Clear the overlay
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Only draw if within bounds
+    if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+      const screenX = Math.floor(x * PIXEL_SIZE * view.scale + view.x);
+      const screenY = Math.floor(y * PIXEL_SIZE * view.scale + view.y);
+      const pixelSize = Math.ceil(PIXEL_SIZE * view.scale);
+      
+      ctx.fillStyle = selectedColor + '80'; // 50% opacity
+      ctx.fillRect(
+        screenX,
+        screenY,
+        pixelSize,
+        pixelSize
+      );
+    }
+  }, [view, PIXEL_SIZE, selectedColor]);
+
+  // Update handleMouseMove to use the overlay
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -319,7 +360,14 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     const canvasX = (e.clientX - rect.left);
     const canvasY = (e.clientY - rect.top);
     
-    // Handle dragging first
+    const x = Math.floor((canvasX - view.x) / (PIXEL_SIZE * view.scale));
+    const y = Math.floor((canvasY - view.y) / (PIXEL_SIZE * view.scale));
+    
+    // Draw preview on overlay
+    drawPreviewPixel(x, y);
+    onMousePosChange({ x, y });
+
+    // Handle dragging
     if (isDragging) {
       const dx = e.clientX - dragStart.x;
       const dy = e.clientY - dragStart.y;
@@ -329,52 +377,27 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
         x: dragStartPos.x + dx,
         y: dragStartPos.y + dy
       }));
+      return; // Exit early if dragging
     }
 
-    // Calculate grid position for hover/preview
-    const x = Math.floor((canvasX - view.x) / (PIXEL_SIZE * view.scale));
-    const y = Math.floor((canvasY - view.y) / (PIXEL_SIZE * view.scale));
-    
-    onMousePosChange({ x, y });
-
-    // Check if we recently placed a pixel (within last 1000ms)
-    const timeSincePlacement = Date.now() - lastPlacementRef.current;
-    if (timeSincePlacement < 1000) {
-      onMousePosChange(null); // Hide tooltip
-      return;
-    }
-
-    // Only show tooltip if zoomed in enough and not dragging
-    if (!isDragging && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+    // Update hover data for tooltip
+    if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
       const key = `${x},${y}`;
       const pixelData = pixels.get(key);
 
-      // Check if mouse is within the current pixel bounds
-      const pixelScreenX = x * PIXEL_SIZE * view.scale + view.x;
-      const pixelScreenY = y * PIXEL_SIZE * view.scale + view.y;
-      const isWithinPixel = 
-        canvasX >= pixelScreenX && 
-        canvasX <= pixelScreenX + (PIXEL_SIZE * view.scale) &&
-        canvasY >= pixelScreenY && 
-        canvasY <= pixelScreenY + (PIXEL_SIZE * view.scale);
-
-      if (pixelData && view.scale >= TOOLTIP_ZOOM_THRESHOLD && isWithinPixel) {
+      if (view.scale >= TOOLTIP_ZOOM_THRESHOLD) {
         setHoverData({
           x,
           y,
-          screenX: pixelScreenX,
-          screenY: pixelScreenY,
-          pixel: pixelData
+          screenX: x * PIXEL_SIZE * view.scale + view.x,
+          screenY: y * PIXEL_SIZE * view.scale + view.y,
+          pixel: pixelData || null
         });
-      } else {
-        setHoverData(null);
       }
-      setPreviewPixel({ x, y });
     } else {
       setHoverData(null);
-      setPreviewPixel({ x: -1, y: -1 });
     }
-  }, [pixels, view, PIXEL_SIZE, isDragging, dragStart, dragStartPos, onMousePosChange]);
+  }, [pixels, view, PIXEL_SIZE, isDragging, dragStart, dragStartPos, onMousePosChange, drawPreviewPixel]);
 
   // Modify handleMouseUp
   const handleMouseUp = async (e: React.MouseEvent) => {
@@ -424,13 +447,14 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
 
-    // Use existing canvas clearing and setup
+    // Clear canvas with gray background
     ctx.fillStyle = '#2C2C2C';
     ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
     const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * view.scale;
     const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * view.scale;
     
+    // Draw white background
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(
       view.x,
@@ -439,7 +463,7 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       gridPixelHeight
     );
 
-    // Keep existing pixel rendering
+    // Draw pixels
     pixels.forEach((pixel, key) => {
       const [x, y] = key.split(',').map(Number);
       const screenX = x * PIXEL_SIZE * view.scale + view.x;
@@ -454,6 +478,43 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       );
     });
 
+    // Draw preview pixel if valid position
+    if (previewPixel.x !== -1 && previewPixel.y !== -1 && !isDragging) {
+      const screenX = previewPixel.x * PIXEL_SIZE * view.scale + view.x;
+      const screenY = previewPixel.y * PIXEL_SIZE * view.scale + view.y;
+      
+      ctx.fillStyle = selectedColor + '80'; // 50% opacity
+      ctx.fillRect(
+        screenX,
+        screenY,
+        PIXEL_SIZE * view.scale,
+        PIXEL_SIZE * view.scale
+      );
+    }
+
+    // Draw grid when zoomed in
+    if (view.scale > 4) {
+      ctx.strokeStyle = '#CCCCCC';
+      ctx.lineWidth = 0.5;
+      
+      for (let x = 0; x <= GRID_SIZE; x++) {
+        const screenX = x * PIXEL_SIZE * view.scale + view.x;
+        ctx.beginPath();
+        ctx.moveTo(screenX, view.y);
+        ctx.lineTo(screenX, GRID_SIZE * PIXEL_SIZE * view.scale + view.y);
+        ctx.stroke();
+      }
+
+      for (let y = 0; y <= GRID_SIZE; y++) {
+        const screenY = y * PIXEL_SIZE * view.scale + view.y;
+        ctx.beginPath();
+        ctx.moveTo(view.x, screenY);
+        ctx.lineTo(GRID_SIZE * PIXEL_SIZE * view.scale + view.x, screenY);
+        ctx.stroke();
+      }
+    }
+
+    // Draw border
     ctx.strokeStyle = '#666666';
     ctx.lineWidth = 2;
     ctx.strokeRect(
@@ -463,25 +524,8 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
       gridPixelHeight
     );
 
-    // Draw selection rectangle if in selection mode
-    if (isSelectionMode && selectionStart && selectionEnd) {
-      const startX = Math.min(selectionStart.x, selectionEnd.x);
-      const endX = Math.max(selectionStart.x, selectionEnd.x);
-      const startY = Math.min(selectionStart.y, selectionEnd.y);
-      const endY = Math.max(selectionStart.y, selectionEnd.y);
-
-      ctx.strokeStyle = '#FF0000';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(
-        startX * PIXEL_SIZE * view.scale + view.x,
-        startY * PIXEL_SIZE * view.scale + view.y,
-        (endX - startX + 1) * PIXEL_SIZE * view.scale,
-        (endY - startY + 1) * PIXEL_SIZE * view.scale
-      );
-    }
-
     needsRender.current = false;
-  }, [pixels, view, isSelectionMode, selectionStart, selectionEnd, PIXEL_SIZE]);
+  }, [pixels, view, previewPixel, selectedColor, isDragging, PIXEL_SIZE]);
 
   // Add RAF loop
   const animate = useCallback(() => {
@@ -509,23 +553,26 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     console.log('Privy user:', user);
   }, [user]);
 
-  // Modify the placePixel function to use optimistic updates
+  // Modify handlePlacePixel to keep the user's balance
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
-      // Optimistic update
+      const key = `${x},${y}`;
+      const currentBalance = userProfile?.token_balance || 0;
+
+      // Create new pixel with user's current balance
       const newPixel: PixelData = {
         color,
         wallet_address: address,
         farcaster_username: userProfile?.farcaster_username || null,
         farcaster_pfp: userProfile?.farcaster_pfp || null,
         placed_at: new Date().toISOString(),
-        token_balance: 0  // Start with 0
+        token_balance: currentBalance  // Use current user's balance
       };
 
-      // Optimistic local update
+      // Update local state
       setPixels(prev => {
         const newPixels = new Map(prev);
-        newPixels.set(`${x},${y}`, newPixel);
+        newPixels.set(key, newPixel);
         return newPixels;
       });
 
@@ -542,16 +589,15 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
 
       if (!response.ok) throw new Error('Failed to place pixel');
       
-      // Update with server response data
       const data = await response.json();
-      if (data.success) {
-        // Update the pixel with server data including token balance
+      
+      // Only update timestamp and color from server response, keep the balance
+      if (data.success && data.pixel) {
         setPixels(prev => {
           const newPixels = new Map(prev);
-          newPixels.set(`${x},${y}`, {
+          newPixels.set(key, {
             ...newPixel,
-            token_balance: data.pixel?.token_balance || 0,
-            placed_at: data.pixel?.placed_at || newPixel.placed_at
+            placed_at: data.pixel.placed_at || newPixel.placed_at
           });
           return newPixels;
         });
@@ -852,15 +898,6 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     };
   }, []);
 
-  // Add a debug log when canvas is mounted
-  useEffect(() => {
-    console.log('Canvas mounted:', {
-      canvasRef,
-      hasCanvas: !!canvasRef.current,
-      element: document.querySelector('canvas')
-    });
-  }, []);
-
   // Render canvas
   useEffect(() => {
     if (isLoading || !canvasRef.current) return;
@@ -1061,6 +1098,54 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     setSelectionEnd(null);
   };
 
+  // Add an effect to update hover data when pixels change
+  useEffect(() => {
+    if (hoverData) {
+      const key = `${hoverData.x},${hoverData.y}`;
+      const freshPixelData = pixels.get(key);
+      if (freshPixelData) {
+        setHoverData(prev => ({
+          ...prev!,
+          pixel: freshPixelData
+        }));
+      }
+    }
+  }, [pixels, hoverData?.x, hoverData?.y]);
+
+  // For Pusher updates, only log significant state changes
+  const handlePusherUpdate = useCallback((data: any) => {
+    if (data.type === 'pixel-update') {
+      console.log('🟣 Significant state change:', {
+        type: data.type,
+        key: data.key,
+        balance: data.balance 
+      });
+    }
+  }, []);
+
+  // For pixel placement, consolidate logs
+  const handlePixelPlacement = useCallback(async (x: number, y: number) => {
+    console.log('🎯 Pixel placement:', { x, y });
+    // ... rest of the placement logic ...
+  }, []);
+
+  // Add initialization for overlay canvas
+  useEffect(() => {
+    const canvas = overlayCanvasRef.current;
+    if (!canvas || !containerRef.current) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const containerWidth = containerRef.current.offsetWidth;
+    
+    canvas.width = containerWidth * dpr;
+    canvas.height = containerWidth * dpr;
+    
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.scale(dpr, dpr);
+    }
+  }, [view.x, view.y, view.scale]); // Destructure view properties
+
   return (
     <div 
       ref={containerRef}
@@ -1113,7 +1198,15 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
         }}
       />
       
-      {hoverData && (
+      <canvas
+        ref={overlayCanvasRef}
+        className="absolute top-0 left-0 w-full h-full pointer-events-none"
+        style={{
+          imageRendering: 'pixelated'
+        }}
+      />
+      
+      {hoverData && hoverData.pixel && (
         <>
           {/* Invisible hover area */}
           <div 
@@ -1197,8 +1290,9 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
             <div className="text-neutral-500 mt-0.5">
               {hoverData?.pixel?.placed_at && formatTimeSince(hoverData.pixel.placed_at)} ago
             </div>
+            {/* Tooltip balance */}
             <div className="text-amber-400 mt-0.5">
-              {formatNumber(hoverData.pixel!.token_balance ?? 0)} $BILLBOARD
+              {formatNumber(hoverData?.pixel?.token_balance ?? 0)} $BILLBOARD
             </div>
             {hoverData?.pixel?.locked_until && Number(hoverData.pixel.locked_until) > Date.now() && (
               <div className="text-yellow-400 mt-0.5">

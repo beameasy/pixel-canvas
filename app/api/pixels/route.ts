@@ -6,6 +6,7 @@ import { getBillboardBalance, getTokensNeededForUsdAmount } from '@/app/api/_lib
 import { pusher } from '@/lib/server/pusher';
 import { v4 as uuidv4 } from 'uuid';
 import { triggerPusherEvent } from '@/lib/server/pusher';
+import { canPlacePixel, canOverwritePixel } from '@/lib/server/tokenTiers';
 
 const ONE_HOUR = 60 * 60 * 1000; // 1 hour in milliseconds
 
@@ -132,28 +133,6 @@ async function getTokenBalance(walletAddress: string): Promise<number> {
   }
 }
 
-// Add pixel placement rules
-async function canOverwritePixel(x: number, y: number, newWallet: string): Promise<boolean> {
-  const existingPixel = await redis.hget('canvas:pixels', `${x},${y}`);
-  if (!existingPixel) return true;
-  
-  const now = Date.now();
-  
-  // Check lock status
-  if ((existingPixel as any).locked_until && (existingPixel as any).locked_until > now) {
-    return false;
-  }
-  
-  // After 4 hours, anyone can overwrite
-  if (now - Date.parse((existingPixel as any).placed_at) > 4 * 60 * 60 * 1000) {
-    return true;
-  }
-  
-  // Check token balance using cache
-  const newBalance = await getTokenBalance(newWallet);
-  return newBalance >= (existingPixel as any).token_balance;
-}
-
 // Add locking functionality
 async function lockPixel(x: number, y: number, wallet: string, duration: number): Promise<boolean> {
   const existingPixel = await redis.hget('canvas:pixels', `${x},${y}`);
@@ -232,6 +211,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Your wallet has been banned' }, { status: 403 });
     }
 
+    // Check cooldown
+    if (!await canPlacePixel(walletAddress)) {
+      return NextResponse.json({ 
+        error: 'Please wait for your cooldown to expire'
+      }, { status: 429 });
+    }
+
     const { x, y, color, lockDuration } = await request.json();
     
     // Get cached user data with proper type checking
@@ -272,6 +258,17 @@ export async function POST(request: Request) {
       userInfo.token_balance = balance;
     }
 
+    // Check if can overwrite
+    const existingPixel = await redis.hget('canvas:pixels', `${x},${y}`);
+    if (existingPixel && !await canOverwritePixel(walletAddress, existingPixel)) {
+      return NextResponse.json({ 
+        error: 'This pixel is protected'
+      }, { status: 403 });
+    }
+
+    // Update cooldown
+    await redis.set(`pixel:cooldown:${walletAddress}`, Date.now().toString());
+
     // Create pixel data using cached user info
     const pixelData = {
       id: uuidv4(),
@@ -282,11 +279,15 @@ export async function POST(request: Request) {
       placed_at: new Date().toISOString(),
       farcaster_username: userInfo.farcaster_username || null,
       farcaster_pfp: userInfo.farcaster_pfp || null,
-      token_balance: userInfo.token_balance,
+      token_balance: userInfo.token_balance || 0,  // Ensure we have a default
       locked_until: lockDuration ? Date.now() + Math.min(lockDuration, 4 * 60 * 60 * 1000) : undefined
     };
 
-    console.log('🔵 Storing pixel data:', pixelData);
+    console.log('🔵 Storing pixel data:', {
+      ...pixelData,
+      token_balance_type: typeof userInfo.token_balance,
+      userInfo_balance: userInfo.token_balance
+    });
 
     // Store pixel in Redis
     await redis.hset('canvas:pixels', {
