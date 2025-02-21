@@ -95,4 +95,4 @@ async function getTokenBalance(walletAddress: string): Promise<number> {
   });
 
   return balance;
-} 
+}

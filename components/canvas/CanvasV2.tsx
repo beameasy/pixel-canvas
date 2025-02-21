@@ -553,30 +553,23 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     console.log('Privy user:', user);
   }, [user]);
 
-  // Modify handlePlacePixel to keep the user's balance
+  // Modify handlePlacePixel to handle errors better
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
       const key = `${x},${y}`;
       const currentBalance = userProfile?.token_balance || 0;
 
-      // Create new pixel with user's current balance
+      // Create new pixel data
       const newPixel: PixelData = {
         color,
         wallet_address: address,
         farcaster_username: userProfile?.farcaster_username || null,
         farcaster_pfp: userProfile?.farcaster_pfp || null,
         placed_at: new Date().toISOString(),
-        token_balance: currentBalance  // Use current user's balance
+        token_balance: currentBalance
       };
 
-      // Update local state
-      setPixels(prev => {
-        const newPixels = new Map(prev);
-        newPixels.set(key, newPixel);
-        return newPixels;
-      });
-
-      // Send to server
+      // Send to server first, before any optimistic updates
       const response = await fetch('/api/pixels', {
         method: 'POST',
         headers: {
@@ -587,27 +580,31 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
         body: JSON.stringify({ x, y, color })
       });
 
-      if (!response.ok) throw new Error('Failed to place pixel');
-      
       const data = await response.json();
-      
-      // Only update timestamp and color from server response, keep the balance
-      if (data.success && data.pixel) {
-        setPixels(prev => {
-          const newPixels = new Map(prev);
-          newPixels.set(key, {
-            ...newPixel,
-            placed_at: data.pixel.placed_at || newPixel.placed_at
-          });
-          return newPixels;
-        });
+
+      // Handle non-200 responses without throwing
+      if (!response.ok) {
+        setFlashMessage(data.error || 'Failed to place pixel');
+        return; // Exit early without updating pixels
       }
+
+      // Only update UI if server request was successful
+      setPixels(prev => {
+        const newPixels = new Map(prev);
+        newPixels.set(key, newPixel);
+        return newPixels;
+      });
 
       lastPlacementRef.current = Date.now();
       onMousePosChange(null);
     } catch (error) {
-      console.error('Failed to place pixel:', error);
-      setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
+      // Handle unexpected errors (network issues, etc)
+      console.error('Unexpected error placing pixel:', error);
+      setFlashMessage('Unable to connect to server');
+      if (error instanceof Error && 
+          (error.message.includes('auth') || error.message.includes('token'))) {
+        onAuthError();
+      }
     }
   };
 
