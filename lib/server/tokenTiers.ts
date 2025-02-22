@@ -2,24 +2,24 @@ import { redis } from './redis';
 import { getBillboardPrice, getBillboardBalance } from '@/app/api/_lib/subgraphClient';
 
 interface TokenTier {
-  minUsdValue: number;
-  cooldown: number;  // in seconds
-  protectionDuration: number;  // in hours
+  minTokens: number;     // Amount of BILLBOARD tokens needed
+  cooldown: number;      // in seconds
+  protectionTime: number; // in hours
 }
 
 export const TIERS: TokenTier[] = [
-  { minUsdValue: 250, cooldown: 1, protectionDuration: 24 },
-  { minUsdValue: 100, cooldown: 5, protectionDuration: 24 },
-  { minUsdValue: 50, cooldown: 15, protectionDuration: 24 },
-  { minUsdValue: 20, cooldown: 30, protectionDuration: 24 },
-  { minUsdValue: 0, cooldown: 60, protectionDuration: 0 }
+  { minTokens: 350_000_000, cooldown: 1,  protectionTime: 24 }, // ~$250
+  { minTokens: 150_000_000, cooldown: 5,  protectionTime: 24 }, // ~$100
+  { minTokens: 75_000_000,  cooldown: 15, protectionTime: 24 }, // ~$50
+  { minTokens: 30_000_000,  cooldown: 30, protectionTime: 24 }, // ~$20
+  { minTokens: 0,           cooldown: 60, protectionTime: 0 }   // Default tier
 ];
 
 export async function getUserTier(tokenBalance: number): Promise<TokenTier> {
   const tokenPrice = await getTokenPrice();
   const usdValue = tokenBalance * tokenPrice;
   
-  return TIERS.find(tier => usdValue >= tier.minUsdValue) || TIERS[TIERS.length - 1];
+  return TIERS.find(tier => usdValue >= tier.minTokens) || TIERS[TIERS.length - 1];
 }
 
 async function getTokenPrice(): Promise<number> {
@@ -65,11 +65,11 @@ export async function canOverwritePixel(
   const existingTier = await getUserTier(existingBalance);
 
   // If original owner has less than $20 worth, anyone can overwrite
-  if (existingTier.minUsdValue < 20) return true;
+  if (existingTier.minTokens < 20) return true;
 
   // Check 48-hour protection
   const pixelAge = Date.now() - new Date(existingPixelData.placed_at).getTime();
-  const protectionExpired = pixelAge > (existingTier.protectionDuration * 60 * 60 * 1000);
+  const protectionExpired = pixelAge > (existingTier.protectionTime * 60 * 60 * 1000);
 
   if (!protectionExpired) {
     // During protection, need equal or higher balance

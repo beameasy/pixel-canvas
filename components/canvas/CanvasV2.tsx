@@ -122,6 +122,12 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
   // Add a ref for the overlay canvas
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Add this to your state declarations
+  const [pendingPixels, setPendingPixels] = useState<Map<string, PixelData>>(new Map());
+
+  // Add connection state tracking
+  const [pusherConnected, setPusherConnected] = useState(false);
+
   useEffect(() => {
     const updateCanvasSize = () => {
       if (containerRef.current) {
@@ -553,54 +559,54 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     console.log('Privy user:', user);
   }, [user]);
 
-  // Modify handlePlacePixel to handle errors better
+  // Modify handlePlacePixel
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
       const key = `${x},${y}`;
-      const currentBalance = userProfile?.token_balance || 0;
-
-      // Create new pixel data
-      const newPixel: PixelData = {
+      
+      // Create optimistic pixel data
+      const optimisticPixel: PixelData = {
         color,
-        wallet_address: address,
+        wallet_address: address || '',
         farcaster_username: userProfile?.farcaster_username || null,
         farcaster_pfp: userProfile?.farcaster_pfp || null,
         placed_at: new Date().toISOString(),
-        token_balance: currentBalance
+        token_balance: userProfile?.token_balance || 0
       };
 
-      // Send to server first, before any optimistic updates
+      // Optimistically update UI
+      setPixels(prev => {
+        const newPixels = new Map(prev);
+        newPixels.set(key, optimisticPixel);
+        return newPixels;
+      });
+
+      // Make API call
       const response = await fetch('/api/pixels', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-wallet-address': address,
+          'x-wallet-address': address || '',
           'x-privy-token': (await getAccessToken()) || ''
         },
         body: JSON.stringify({ x, y, color })
       });
 
-      const data = await response.json();
-
-      // Handle non-200 responses without throwing
       if (!response.ok) {
-        setFlashMessage(data.error || 'Failed to place pixel');
-        return; // Exit early without updating pixels
+        // Revert on failure
+        setPixels(prev => {
+          const newPixels = new Map(prev);
+          newPixels.delete(key);
+          return newPixels;
+        });
+        throw new Error(await response.text());
       }
-
-      // Only update UI if server request was successful
-      setPixels(prev => {
-        const newPixels = new Map(prev);
-        newPixels.set(key, newPixel);
-        return newPixels;
-      });
 
       lastPlacementRef.current = Date.now();
       onMousePosChange(null);
     } catch (error) {
-      // Handle unexpected errors (network issues, etc)
-      console.error('Unexpected error placing pixel:', error);
-      setFlashMessage('Unable to connect to server');
+      console.error('Failed to place pixel:', error);
+      setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
       if (error instanceof Error && 
           (error.message.includes('auth') || error.message.includes('token'))) {
         onAuthError();
@@ -1143,6 +1149,47 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
     }
   }, [view.x, view.y, view.scale]); // Destructure view properties
 
+  useEffect(() => {
+    const channel = getCanvasChannel();
+    
+    // Add connection handlers
+    channel.bind('pusher:subscription_succeeded', () => {
+      setPusherConnected(true);
+    });
+
+    channel.bind('pusher:subscription_error', () => {
+      console.error('Pusher subscription failed');
+      // Force reconnect after delay
+      setTimeout(() => {
+        channel.subscribe();
+      }, 2000);
+    });
+
+    // Handle disconnections
+    channel.bind('pusher:disconnected', () => {
+      setPusherConnected(false);
+      // Attempt to reconnect
+      setTimeout(() => {
+        channel.subscribe();
+      }, 1000);
+    });
+
+    // Set connection timeout
+    const timeout = setTimeout(() => {
+      if (!pusherConnected) {
+        console.log('Pusher connection timeout, forcing reconnect');
+        channel.unsubscribe();
+        channel.subscribe();
+      }
+    }, 5000);
+
+    return () => {
+      clearTimeout(timeout);
+      channel.unbind_all();
+      channel.unsubscribe();
+    };
+  }, []);
+
   return (
     <div 
       ref={containerRef}
@@ -1300,18 +1347,36 @@ const Canvas = forwardRef<{ resetView: () => void; clearCanvas: () => void }, Ca
         </>
       )}
       {!isLoading && (
-        <Minimap
-          canvasSize={GRID_SIZE}
-          viewportSize={{
-            width: canvasSize / (PIXEL_SIZE * view.scale),
-            height: canvasSize / (PIXEL_SIZE * view.scale)
-          }}
-          viewPosition={{
-            x: -view.x / (PIXEL_SIZE * view.scale),
-            y: -view.y / (PIXEL_SIZE * view.scale)
-          }}
-          pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
-        />
+        <div className="absolute bottom-2 right-2">
+          <Minimap
+            canvasSize={GRID_SIZE}
+            viewportSize={{
+              width: containerRef.current?.offsetWidth || 0 / (PIXEL_SIZE * view.scale),
+              height: containerRef.current?.offsetHeight || 0 / (PIXEL_SIZE * view.scale)
+            }}
+            viewPosition={{
+              x: -view.x / (PIXEL_SIZE * view.scale),
+              y: -view.y / (PIXEL_SIZE * view.scale)
+            }}
+            pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
+          />
+        </div>
+      )}
+      {!isSmallScreen && windowSize.width > 0 && (
+        <div className="absolute bottom-4 right-4 z-50">
+          <Minimap
+            canvasSize={GRID_SIZE}
+            viewportSize={{
+              width: canvasSize / (PIXEL_SIZE * view.scale),
+              height: canvasSize / (PIXEL_SIZE * view.scale)
+            }}
+            viewPosition={{
+              x: -view.x / (PIXEL_SIZE * view.scale),
+              y: -view.y / (PIXEL_SIZE * view.scale)
+            }}
+            pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
+          />
+        </div>
       )}
     </div>
   );
