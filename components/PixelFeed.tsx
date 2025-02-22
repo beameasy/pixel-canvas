@@ -83,7 +83,13 @@ export default function PixelFeed() {
 
     const handlePixelPlaced = (data: { pixel: PixelPlacement }) => {
       if (!mounted) return;
-      setPlacements(prev => [data.pixel, ...prev].slice(0, 6));
+      setPlacements(prev => {
+        // Check if this pixel ID already exists
+        if (prev.some(p => p.id === data.pixel.id)) {
+          return prev; // Skip if duplicate
+        }
+        return [data.pixel, ...prev].slice(0, 6);
+      });
     };
 
     const fetchInitialData = async () => {
@@ -104,6 +110,10 @@ export default function PixelFeed() {
         const recentPixels = history
           .map((pixel: string | PixelPlacement) => 
             typeof pixel === 'string' ? JSON.parse(pixel) : pixel
+          )
+          // Filter out duplicates based on ID
+          .filter((pixel: PixelPlacement, index: number, self: PixelPlacement[]) => 
+            index === self.findIndex((p) => p.id === pixel.id)
           );
         setPlacements(recentPixels);
       } catch (error) {
@@ -121,14 +131,14 @@ export default function PixelFeed() {
   }, []);
 
   return (
-    <div className="w-full max-w-[600px] mx-auto mb-1 font-mono text-[10px] sm:text-xs flex flex-col items-center h-16 sm:h-12">
-      <AnimatePresence>
+    <div className="w-full max-w-[600px] mx-auto font-mono text-[10px] sm:text-xs flex flex-col items-center h-12">
+      <AnimatePresence mode="popLayout">
         {isMobile ? (
-          placements.map((placement, index) => (
+          placements.slice(0, 3).map((placement, index) => (
             <motion.div
               key={placement.id}
               initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1 - index * 0.2, y: index * 16 }}
+              animate={{ opacity: 1 - index * 0.2, y: index * 20 }}
               exit={{ opacity: 0, y: 60 }}
               transition={{ duration: 0.2 }}
               className="text-slate-300 whitespace-nowrap px-2 absolute"
@@ -151,7 +161,7 @@ export default function PixelFeed() {
               <motion.div
                 key={leftPlacement.id}
                 initial={{ opacity: 0, y: -20 }}
-                animate={{ opacity: 1 - rowIndex * 0.2, y: rowIndex * 16 }}
+                animate={{ opacity: 1 - rowIndex * 0.2, y: rowIndex * 20 }}
                 exit={{ opacity: 0, y: 60 }}
                 transition={{ duration: 0.2 }}
                 className="text-slate-300 whitespace-nowrap px-2 absolute"
