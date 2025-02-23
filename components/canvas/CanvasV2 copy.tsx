@@ -8,7 +8,6 @@ import { getCanvasChannel } from '@/lib/client/pusher';
 import { debounce } from 'lodash';
 import { pusherManager } from '@/lib/client/pusherManager';
 import FlashMessage from '@/components/ui/FlashMessage';
-import { TIERS, DEFAULT_TIER } from '@/lib/server/tiers.config';
 
 declare global {
   interface Window {
@@ -37,34 +36,25 @@ interface CanvasProps {
   touchMode: 'place' | 'view';
   onTouchModeChange: (mode: 'place' | 'view') => void;
   selectionMode: boolean;
-  onClearSelection: () => void;
+  onClearSelection: (coordinates: Array<{x: number, y: number}>) => Promise<void>;
 }
 
 // Add interface for pixel data
-type PixelData = {
-  x: number;
-  y: number;
+interface PixelData {
   color: string;
   wallet_address?: string;
   farcaster_username?: string | null;
   farcaster_pfp?: string | null;
   placed_at: string;
-  token_balance?: number;
-  locked_until?: number | null;
-  canOverwrite: boolean;
-};
+  token_balance: number;
+  locked_until?: string | null;
+}
 
 export interface CanvasRef {
   resetView: () => void;
   clearCanvas: () => void;
   shareCanvas: () => Promise<string>;
 }
-
-// Add type for TIERS if not already defined
-type Tiers = Record<string, { refreshRate: number }>;
-
-// Add this type near the top of the file
-type GetUserTier = (address: string) => Promise<{ name: string }>;
 
 const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange, selectionMode, onClearSelection }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -146,16 +136,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Add connection state tracking
   const [pusherConnected, setPusherConnected] = useState(false);
 
-  // Add state for cooldown if needed
-  const [isInCooldown, setIsInCooldown] = useState(false);
-
-  // Add new states and refs
-  const [isCanvasLoading, setIsCanvasLoading] = useState(true);
-  const [lastCanvasUpdate, setLastCanvasUpdate] = useState(0);
-
-  // Add these near your other state declarations
-  const CACHE_DURATION = 60000; // Cache balances for 1 minute
-
   useEffect(() => {
     const updateCanvasSize = () => {
       if (containerRef.current) {
@@ -227,124 +207,64 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     );
   }, [view, PIXEL_SIZE]);
 
-  // Update the loadCanvasState function
-  const loadCanvasState = useCallback(async (force = false) => {
-    try {
-      console.log('🔵 Loading canvas state...');
-      const response = await fetch('/api/canvas', {
-        headers: {
-          'x-wallet-address': address || '',
-        }
-      });
-      
-      if (response.status === 304 && pixels.size > 0) {
-        console.log('🔵 Canvas data unchanged');
-        return;
-      }
-      
-      // Check for empty response
-      const text = await response.text();
-      if (!text) {
-        console.log('🔵 Empty response received');
-        return;
-      }
-
-      const data = JSON.parse(text);
-      console.log('🔵 Canvas data loaded:', { pixelCount: data.length });
-      setPixels(new Map(data.map((pixel: any) => [
-        `${pixel.x},${pixel.y}`, 
-        pixel
-      ])));
-    } catch (error) {
-      console.error('Failed to load canvas state:', error);
-    }
-  }, [address, pixels.size]);
-
-  // Just initial load, no interval
+  // Modify the initialization useEffect to only load pixels once
   useEffect(() => {
-    loadCanvasState(true);
-  }, [loadCanvasState]);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-  // Real-time updates via Pusher
-  useEffect(() => {
-    const channel = getCanvasChannel();
-    channel.bind('pixel-placed', (data) => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const containerWidth = containerRef.current?.offsetWidth || 600;
+    
+    canvas.width = containerWidth * dpr;
+    canvas.height = containerWidth * dpr;
+    ctx.scale(dpr, dpr);
+
+    canvas.style.width = `${containerWidth}px`;
+    canvas.style.height = `${containerWidth}px`;
+
+    // Load initial pixels only once
+    loadPixels();
+
+    // Use pusherManager instead of direct channel
+    const handlePixelPlaced = (data: any) => {
+      if (!data.pixel) return;
       setPixels(prev => {
         const newPixels = new Map(prev);
-        newPixels.set(`${data.pixel.x},${data.pixel.y}`, data.pixel);
+        const key = `${data.pixel.x},${data.pixel.y}`;
+        newPixels.set(key, {
+          ...data.pixel,
+          token_balance: data.pixel.token_balance || userProfile?.token_balance || 0
+        });
         return newPixels;
       });
-    });
-
-    return () => channel.unbind('pixel-placed');
-  }, []);
-
-  // 2. User profile loading - only when needed
-  useEffect(() => {
-    if (!address || userProfile) return;
-    
-    const loadProfile = async () => {
-      try {
-        const response = await fetch(`/api/users/check-profile`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            privy_id: user?.id,
-            wallet_address: address.toLowerCase()
-          })
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          setUserProfile(data);
-        }
-      } catch (error) {
-        console.error('Failed to load profile:', error);
-      }
     };
 
-    loadProfile();
-  }, [address, userProfile, user?.id]);
+    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
 
-  // 3. Defer non-critical UI setup
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    
-    const timer = setTimeout(() => {
-      // Initialize tooltips, minimap after initial render
-      setIsLoading(false);
-    }, 100);
-    
-    return () => clearTimeout(timer);
-  }, [canvasRef.current]);
+    return () => {
+      pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
+    };
+  }, [userProfile]);
 
   // Modify the loadPixels function to reduce logging
   const loadPixels = useCallback(async () => {
     try {
       const response = await fetch('/api/pixels');
-      
-      // Log response headers to verify caching
-      console.log('🔵 Canvas response:', {
-        status: response.status,
-        cached: response.headers.get('x-vercel-cache'),
-        cacheControl: response.headers.get('cache-control')
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to load canvas state');
-      }
-
       const data = await response.json();
-      console.log('🔵 Canvas data loaded:', {
-        count: data.length,
-        sample: data.slice(0, 1)
+      
+      // Convert array to Map
+      const pixelMap = new Map();
+      data.forEach((pixel: any) => {
+        pixelMap.set(`${pixel.x},${pixel.y}`, pixel);
       });
-
-      setPixels(new Map(data.map((pixel: any) => 
-        [`${pixel.x},${pixel.y}`, pixel]
-      )));
+      
+      setPixels(pixelMap);
     } catch (error) {
       console.error('Failed to load pixels:', error);
+      setPixels(new Map());
       setFlashMessage('Failed to load canvas state');
     }
   }, []);
@@ -412,14 +332,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const x = Math.floor((mouseX - view.x) / (PIXEL_SIZE * view.scale));
     const y = Math.floor((mouseY - view.y) / (PIXEL_SIZE * view.scale));
 
-    // Clear preview pixel when starting drag
-    setPreviewPixel({ x: -1, y: -1 });
-    const canvas = overlayCanvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (ctx && canvas) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-
     // Right click or middle click is always drag
     if (e.button === 2 || e.button === 1) {
       setIsDragging(true);
@@ -457,18 +369,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const ctx = canvas?.getContext('2d');
     if (!ctx || !canvas) return;
 
-    // Match main canvas dimensions
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = canvasRef.current?.width || 0;
-    canvas.height = canvasRef.current?.height || 0;
-    ctx.scale(dpr, dpr);
-    ctx.imageSmoothingEnabled = false;
-
     // Clear the overlay
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Only draw if within bounds and not dragging
-    if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && !isDragging) {
+    // Only draw if within bounds
+    if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
       const screenX = Math.floor(x * PIXEL_SIZE * view.scale + view.x);
       const screenY = Math.floor(y * PIXEL_SIZE * view.scale + view.y);
       const pixelSize = Math.ceil(PIXEL_SIZE * view.scale);
@@ -481,9 +386,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         pixelSize
       );
     }
-  }, [view, PIXEL_SIZE, selectedColor, isDragging]);
+  }, [view, PIXEL_SIZE, selectedColor]);
 
-  // Update handleMouseMove
+  // Update handleMouseMove to use the overlay
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -493,6 +398,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     
     const x = Math.floor((canvasX - view.x) / (PIXEL_SIZE * view.scale));
     const y = Math.floor((canvasY - view.y) / (PIXEL_SIZE * view.scale));
+    
 
     // Only draw preview if not dragging
     if (!isDragging) {
@@ -530,12 +436,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     } else {
       setHoverData(null);
     }
-  }, [pixels, view, PIXEL_SIZE, isDragging, dragStart, dragStartPos, onMousePosChange, drawPreviewPixel]);
-
-  const handleMouseLeave = useCallback(() => {
-    drawPreviewPixel(-1, -1);
-    setHoverData(null);
-  }, [drawPreviewPixel]);
+  }, [pixels, view, PIXEL_SIZE, isDragging, dragStart, dragStartPos, onMousePosChange, drawPreviewPixel, isSelectionMode, selectionStart]);
 
   // Modify handleMouseUp
   const handleMouseUp = async (e: React.MouseEvent) => {
@@ -561,6 +462,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
     
     setClickStart(null);
+  };
+
+  // Add to handleMouseLeave
+  const handleMouseLeave = (e: React.MouseEvent) => {
+    setPreviewPixel({ x: -1, y: -1 });
+    setHoverData(null);
   };
 
   // Clean up timeout on unmount
@@ -704,9 +611,16 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     console.log('Privy user:', user);
   }, [user]);
 
-  // Modify handlePlacePixel to handle cooldown in the response
+  // Modify handlePlacePixel
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
+      console.log('🎨 Starting pixel placement:', { x, y, color });
+      
+      // Store current state but don't modify yet
+      const key = `${x},${y}`;
+      const previousPixel = pixels.get(key);
+      console.log('🎨 Previous pixel state:', previousPixel);
+
       const response = await fetch('/api/pixels', {
         method: 'POST',
         headers: {
@@ -717,23 +631,31 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         body: JSON.stringify({ x, y, color })
       });
 
-      const data = await response.json();
-      
+      console.log('🎨 API response status:', response.status);
+
       if (!response.ok) {
-        setFlashMessage(data.error || 'Failed to place pixel');
-        return;
+        console.log('🎨 Placement failed, state unchanged');
+        const error = await response.json();
+        console.log('🔵 Received error:', error);
+        throw new Error(error.error || 'Failed to place pixel');
       }
 
-      // Only update the pixel visually after successful placement
-      setPixels(prev => {
-        const newPixels = new Map(prev);
-        newPixels.set(`${x},${y}`, data.pixel);
-        return newPixels;
-      });
+      // Only update state if API call succeeds
+      const data = await response.json();
+      console.log('🎨 API response data:', data);
 
+      if (data.pixel) {
+        setPixels(prev => {
+          const newPixels = new Map(prev);
+          newPixels.set(key, data.pixel);
+          return newPixels;
+        });
+      } else {
+        console.error('Invalid pixel data received:', data);
+      }
     } catch (error) {
       console.error('Failed to place pixel:', error);
-      setFlashMessage('Failed to place pixel');
+      setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
     }
   };
 
@@ -871,17 +793,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Add zoom handling to clear preview
+  // Replace the handleWheel function with this adjusted version
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    
-    // Clear preview pixel during zoom
-    const canvas = overlayCanvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (ctx && canvas) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-    setPreviewPixel({ x: -1, y: -1 });
     
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -891,13 +805,20 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     setView(prev => {
       const delta = e.deltaY;
-      const scaleChange = delta > 0 ? 0.9 : 1.1;
+      const scaleChange = delta > 0 ? 0.9 : 1.1; // Adjusted to be less aggressive
       const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.scale * scaleChange));
       
+      // Calculate the point to zoom towards (mouse position)
+      const zoomPoint = {
+        x: (mouseX - prev.x) / prev.scale,
+        y: (mouseY - prev.y) / prev.scale
+      };
+
+      // Calculate new position that keeps the zoom point stationary
       return {
         scale: newScale,
-        x: mouseX - (mouseX - prev.x) * (newScale / prev.scale),
-        y: mouseY - (mouseY - prev.y) * (newScale / prev.scale)
+        x: mouseX - zoomPoint.x * newScale,
+        y: mouseY - zoomPoint.y * newScale
       };
     });
   }, []);
@@ -1190,7 +1111,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           coordinates.push({ x, y });
         }
       }
-      await onClearSelection();
+      await onClearSelection(coordinates);
       setSelectionStart(null);
       setSelectionEnd(null);
     } catch (error) {
@@ -1291,29 +1212,20 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add initialization for overlay canvas
   useEffect(() => {
-    if (!canvasRef.current || !containerRef.current) return;
+    const canvas = overlayCanvasRef.current;
+    if (!canvas || !containerRef.current) return;
 
-    // Get DPR for retina displays
     const dpr = window.devicePixelRatio || 1;
-    
-    // Set canvas size based on container
     const containerWidth = containerRef.current.offsetWidth;
-    canvasRef.current.width = containerWidth * dpr;
-    canvasRef.current.height = containerWidth * dpr;
     
-    // Set display size
-    canvasRef.current.style.width = `${containerWidth}px`;
-    canvasRef.current.style.height = `${containerWidth}px`;
-
-    // Enable pixel-perfect rendering
-    const ctx = canvasRef.current.getContext('2d');
+    canvas.width = containerWidth * dpr;
+    canvas.height = containerWidth * dpr;
+    
+    const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.scale(dpr, dpr);
-      ctx.imageSmoothingEnabled = false;
     }
-
-    needsRender.current = true;
-  }, [containerRef.current, canvasRef.current]);
+  }, [view.x, view.y, view.scale]); // Destructure view properties
 
   useEffect(() => {
     const channel = getCanvasChannel();
@@ -1365,14 +1277,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     return data;
   };
 
-  const handlePixelPlaced = useCallback((data: any) => {
-    setPixels(prev => {
-      const newPixels = new Map(prev);
-      newPixels.set(`${data.pixel.x},${data.pixel.y}`, data.pixel);
-      return newPixels;
-    });
-  }, []);
-
   return (
     <div 
       ref={containerRef}
@@ -1402,11 +1306,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       )}
       {/* Flash Message - keep within container but increase z-index */}
       {flashMessage && (
-        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50">
-          <FlashMessage 
-            message={flashMessage} 
-            onComplete={() => setFlashMessage(null)} 
-          />
+        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-50">
+          <div className="font-mono text-[#FFD700] text-sm bg-slate-900/90 px-4 py-2 rounded-lg">
+            {flashMessage}
+          </div>
         </div>
       )}
       

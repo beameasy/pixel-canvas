@@ -75,10 +75,10 @@ export default function LogsPage() {
               key={placement.id}
               className="bg-slate-900/50 rounded-lg p-4 border border-slate-700"
             >
-              <div className="flex items-center gap-4">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-4">
+                <div className="flex items-center gap-2 min-w-[140px]">
                   {placement.farcaster_pfp && (
-                    <div className="w-8 h-8 rounded-full overflow-hidden">
+                    <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-full overflow-hidden flex-shrink-0">
                       <Image 
                         src={placement.farcaster_pfp}
                         alt=""
@@ -95,7 +95,7 @@ export default function LogsPage() {
                     }
                     target="_blank"
                     rel="noopener noreferrer"
-                    className={`font-mono ${
+                    className={`font-mono truncate ${
                       placement.farcaster_username 
                         ? "text-purple-400 hover:text-purple-300" 
                         : "text-blue-400 hover:text-blue-300"
@@ -108,22 +108,22 @@ export default function LogsPage() {
                   </a>
                 </div>
 
-                <div className="flex items-center gap-4 text-sm font-mono">
+                <div className="flex items-center gap-2 sm:gap-4 text-xs sm:text-sm font-mono flex-wrap">
                   <div className="flex items-center gap-2">
                     <div 
-                      className="w-4 h-4 rounded-sm border border-slate-700"
+                      className="w-3 h-3 sm:w-4 sm:h-4 rounded-sm border border-slate-700 flex-shrink-0"
                       style={{ backgroundColor: placement.color }}
                     />
                     <span className="hidden md:inline text-slate-300">{placement.color}</span>
                   </div>
                   
-                  <span className="text-emerald-400">({placement.x}, {placement.y})</span>
+                  <span className="text-emerald-400 text-[10px] sm:text-sm whitespace-nowrap">({placement.x}, {placement.y})</span>
                   
                   <span className="hidden md:inline text-amber-400">
                     {formatNumber(placement.token_balance)} $BILLBOARD
                   </span>
                   
-                  <span className="text-slate-400">
+                  <span className="text-slate-400 whitespace-nowrap">
                     {timeAgo(new Date(placement.placed_at))}
                   </span>
                 </div>

@@ -84,9 +84,8 @@ export default function PixelFeed() {
     const handlePixelPlaced = (data: { pixel: PixelPlacement }) => {
       if (!mounted) return;
       setPlacements(prev => {
-        // Check if this pixel ID already exists
         if (prev.some(p => p.id === data.pixel.id)) {
-          return prev; // Skip if duplicate
+          return prev;
         }
         return [data.pixel, ...prev].slice(0, 6);
       });
@@ -111,7 +110,6 @@ export default function PixelFeed() {
           .map((pixel: string | PixelPlacement) => 
             typeof pixel === 'string' ? JSON.parse(pixel) : pixel
           )
-          // Filter out duplicates based on ID
           .filter((pixel: PixelPlacement, index: number, self: PixelPlacement[]) => 
             index === self.findIndex((p) => p.id === pixel.id)
           );
@@ -120,6 +118,12 @@ export default function PixelFeed() {
         console.error('Failed to fetch recent pixels:', error);
       }
     };
+
+    // Check connection and force reconnect if needed
+    if (!pusherManager.isConnected()) {
+      console.log('🔄 PixelFeed: Reconnecting Pusher');
+      pusherManager.reconnect();
+    }
 
     fetchInitialData();
     pusherManager.subscribe('pixel-placed', handlePixelPlaced);
@@ -136,7 +140,7 @@ export default function PixelFeed() {
         {isMobile ? (
           placements.slice(0, 3).map((placement, index) => (
             <motion.div
-              key={placement.id}
+              key={`${placement.wallet_address}-${placement.x}-${placement.y}-${placement.placed_at}`}
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1 - index * 0.2, y: index * 20 }}
               exit={{ opacity: 0, y: 60 }}
@@ -159,7 +163,7 @@ export default function PixelFeed() {
             
             return (
               <motion.div
-                key={leftPlacement.id}
+                key={`${leftPlacement.wallet_address}-${leftPlacement.x}-${leftPlacement.y}-${leftPlacement.placed_at}`}
                 initial={{ opacity: 0, y: -20 }}
                 animate={{ opacity: 1 - rowIndex * 0.2, y: rowIndex * 20 }}
                 exit={{ opacity: 0, y: 60 }}

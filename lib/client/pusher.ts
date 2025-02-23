@@ -24,53 +24,15 @@ export function getCanvasChannel() {
   return channel;
 }
 
-// Export the client as well in case we need it elsewhere
+// Export the client
 export { pusherClient };
 
-// Enhanced connection state management
+// Simplified connection state management
 pusherClient.connection.bind('state_change', (states: { current: string, previous: string }) => {
   console.log(`📡 Pusher state changed from ${states.previous} to ${states.current}`);
-  
-  if (states.current === 'disconnected' || states.current === 'failed') {
-    console.log('🔄 Scheduling reconnection attempt...');
-    setTimeout(() => {
-      console.log('🔄 Attempting to reconnect...');
-      pusherClient.connect();
-    }, 5000);
-  }
 });
 
-pusherClient.connection.bind('connected', () => {
-  console.log('✅ Pusher connected');
-});
-
-pusherClient.connection.bind('disconnected', () => {
-  console.log('❌ Pusher disconnected');
-});
-
-// Enhanced visibility change handler
-if (typeof window !== 'undefined') {
-  let reconnectTimeout: NodeJS.Timeout;
-  
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      console.log('🔄 Page became visible - checking Pusher connection');
-      
-      // Clear any existing reconnect timeout
-      clearTimeout(reconnectTimeout);
-      
-      if (pusherClient.connection.state !== 'connected') {
-        console.log('🔄 Reconnecting Pusher');
-        // Add a small delay to avoid immediate reconnection
-        reconnectTimeout = setTimeout(() => {
-          pusherClient.connect();
-        }, 1000);
-      }
-    }
-  });
-}
-
-// Log configuration
+// Log configuration once
 console.log('🔵 Pusher client initialized:', {
   key: process.env.NEXT_PUBLIC_PUSHER_KEY?.slice(0, 4) + '...',
   cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER,

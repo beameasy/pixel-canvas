@@ -15,7 +15,6 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
   const [showDisconnect, setShowDisconnect] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [showTokenMenu, setShowTokenMenu] = useState(false);
 
   const handleLogin = async () => {
     try {

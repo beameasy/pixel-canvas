@@ -75,11 +75,6 @@ export default function Ticker() {
       }
     };
 
-    const handleSubscriptionSuccess = () => {
-      if (DEBUG) console.log('✅ Subscription succeeded, fetching initial data');
-      fetchInitialData();
-    };
-
     const fetchInitialData = async () => {
       try {
         const response = await fetch('/api/ticker');
@@ -93,16 +88,17 @@ export default function Ticker() {
       }
     };
 
-    // Initial data fetch immediately
-    fetchInitialData();
+    // Check connection and force reconnect if needed
+    if (!pusherManager.isConnected()) {
+      console.log('🔄 Ticker: Reconnecting Pusher');
+      pusherManager.reconnect();
+    }
 
-    // Subscribe to events
+    fetchInitialData();
     pusherManager.subscribe('pixel-placed', handlePixelPlaced);
-    pusherManager.subscribe('pusher:subscription_succeeded', handleSubscriptionSuccess);
 
     return () => {
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
-      pusherManager.unsubscribe('pusher:subscription_succeeded', handleSubscriptionSuccess);
     };
   }, []);
 

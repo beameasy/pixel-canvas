@@ -4,9 +4,10 @@ import Canvas from '@/components/canvas/CanvasV2';
 import PixelLogo from '@/components/ui/PixelLogo';
 import Controls from '@/components/layout/Controls';
 import { usePrivy } from '@privy-io/react-auth';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { AdminTools } from '@/components/admin/AdminTools';
 import PixelFeed from '@/components/PixelFeed';
+import { CanvasRef } from '@/components/canvas/CanvasV2';
 
 export default function Home() {
   const { authenticated, user } = usePrivy();
@@ -14,16 +15,7 @@ export default function Home() {
   const [showError, setShowError] = useState(false);
   const [mousePos, setMousePos] = useState({ x: -1, y: -1 });
   const [touchMode, setTouchMode] = useState<'place' | 'view'>('place');
-  const canvasRef = useRef<{
-    resetView: () => void;
-    clearCanvas: () => void;
-    shareCanvas: () => void;
-  }>(null);
-  const [selectionMode, setSelectionMode] = useState(false);
-
-  useEffect(() => {
-    window.scrollTo(0, 0);
-  }, []);
+  const canvasRef = useRef<CanvasRef>(null);
 
   const handleAuthError = () => {
     setShowError(true);
@@ -36,25 +28,6 @@ export default function Home() {
 
   const handleShare = () => {
     canvasRef.current?.shareCanvas();
-  };
-
-  const handleClearSelection = async (coordinates: Array<{x: number, y: number}>) => {
-    try {
-      const response = await fetch('/api/admin/clear-pixels', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-wallet-address': user?.wallet?.address || '',
-        },
-        body: JSON.stringify({ coordinates }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to clear pixels');
-      }
-    } catch (error) {
-      console.error('Error clearing pixels:', error);
-    }
   };
 
   const handleBanWallet = async (walletAddress: string, reason: string) => {
@@ -135,8 +108,6 @@ export default function Home() {
           
           <AdminTools 
             onBanWallet={handleBanWallet}
-            onClearSelection={handleClearSelection}
-            onSelectionModeToggle={setSelectionMode}
           />
           
           <Canvas 
@@ -148,8 +119,8 @@ export default function Home() {
             onMousePosChange={(pos) => pos ? setMousePos(pos) : setMousePos({ x: -1, y: -1 })}
             touchMode={touchMode}
             onTouchModeChange={setTouchMode}
-            selectionMode={selectionMode}
-            onClearSelection={handleClearSelection}
+            selectionMode={false}
+            onClearSelection={() => {}}
           />
         </div>
       </main>

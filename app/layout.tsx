@@ -7,6 +7,7 @@ import { pusherManager } from '@/lib/client/pusherManager';
 import { useEffect } from 'react';
 import Header from '@/components/layout/Header';
 import { usePrivy } from '@privy-io/react-auth';
+import { usePathname } from 'next/navigation';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -37,7 +38,16 @@ function AppContent({ children }: { children: React.ReactNode }) {
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+
   useEffect(() => {
+    // Check and reconnect Pusher on route changes
+    console.log('🔄 Layout: Route changed to', pathname);
+    if (!pusherManager.isConnected()) {
+      console.log('🔌 Layout: Reconnecting Pusher after route change');
+      pusherManager.reconnect();
+    }
+
     // Initial connection check
     const timer = setTimeout(() => {
       if (!pusherManager.isConnected()) {
@@ -75,7 +85,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('online', handleOnline);
     };
-  }, []);
+  }, [pathname]);
 
   return (
     <html lang="en">

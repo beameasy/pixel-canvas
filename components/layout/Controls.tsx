@@ -12,10 +12,10 @@ interface ControlsProps {
   flashMessage: string | null;
   touchMode: 'view' | 'place';
   onTouchModeChange: (mode: 'view' | 'place') => void;
-  canvasRef: React.RefObject<HTMLCanvasElement | {
+  canvasRef: React.RefObject<{
     resetView: () => void;
     clearCanvas: () => void;
-    shareCanvas: () => void;
+    shareCanvas: () => Promise<string>;
   } | null>;
   coordinates: { x: number; y: number };
 }
