@@ -101,7 +101,7 @@ async function setPixelMetadata(x: number, y: number, metadata: PixelMetadata): 
 }
 
 // Add balance caching helper
-async function getTokenBalance(walletAddress: string): Promise<number> {
+async function getTokenBalance(walletAddress: string, session: any): Promise<number> {
   try {
     const userData = await redis.hget('users', walletAddress);
     if (userData) {
@@ -125,7 +125,8 @@ async function getTokenBalance(walletAddress: string): Promise<number> {
       token_balance: balance,
       farcaster_username: farcasterUser?.farcaster_username || null,
       farcaster_pfp: farcasterUser?.farcaster_pfp || null,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      privy_id: session?.privy_id || null
     };
 
     if (isDev) {
@@ -197,19 +198,52 @@ export async function POST(request: Request) {
   try {
     const session = await authenticateUser(request);
     if (!session || !session.wallet_address) {
-      return NextResponse.json({ 
-        error: 'Please connect a wallet to place pixels'
-      }, { status: 401 });
+      return NextResponse.json({ error: 'Please connect a wallet to place pixels' }, { status: 401 });
     }
 
     const walletAddress = session.wallet_address.toLowerCase();
 
     // Ban check
-    const allBanned = await redis.smembers('banned:wallets:permanent');
-    const bannedWallets = allBanned.flat();
-    const isBanned = bannedWallets.includes(walletAddress);
+    const isBanned = await redis.sismember('banned:wallets:permanent', walletAddress);
     if (isBanned) {
-      return NextResponse.json({ error: 'Account banned' }, { status: 403 });
+      return NextResponse.json({ error: 'Account banned, you probably deserved it.' }, { status: 403 });
+    }
+
+    // Get cached user data
+    const userData = await redis.hget('users', walletAddress);
+    const user = userData ? (typeof userData === 'string' ? JSON.parse(userData) : userData) : null;
+    
+    // If balance is null, refresh it
+    let balance = user?.token_balance;
+    if (balance === null) {
+      balance = Number(await getBillboardBalance(walletAddress));
+      await redis.hset('users', {
+        [walletAddress]: JSON.stringify({
+          ...user,
+          token_balance: balance,
+          updated_at: new Date().toISOString()
+        })
+      });
+      console.log('💰 Refreshed balance:', balance);
+    }
+
+    // Balance-based cooldown check
+    if (balance === 0) {
+      return NextResponse.json({ 
+        error: 'Please wait 60 seconds between pixels (0 balance)'
+      }, { status: 429 });
+    }
+
+    // Regular tier-based cooldown check
+    const tier = await getUserTier(balance);
+    const lastPlaced = (await redis.hget('pixel:cooldowns', walletAddress) || '0').toString();
+    if (lastPlaced) {
+      const timeSinceLastPlaced = Date.now() - parseInt(lastPlaced);
+      if (timeSinceLastPlaced < tier.cooldownSeconds * 1000) {
+        return NextResponse.json({ 
+          error: `Please wait ${Math.ceil((tier.cooldownSeconds * 1000 - timeSinceLastPlaced) / 1000)} seconds`
+        }, { status: 429 });
+      }
     }
 
     const { x, y, color } = await request.json();
@@ -228,28 +262,6 @@ export async function POST(request: Request) {
       }, { status: 403 });
     }
 
-    // Check cooldown
-    const lastPlaced = (await redis.hget('pixel:cooldowns', walletAddress) || '0').toString();
-    if (lastPlaced) {
-      const timeSinceLastPlaced = Date.now() - parseInt(lastPlaced);
-      const balance = Number(await getTokenBalance(walletAddress));
-      const tier = await getUserTier(balance);
-      
-      if (timeSinceLastPlaced < tier.cooldownSeconds * 1000) {
-        return NextResponse.json({ 
-          error: `Please wait ${Math.ceil((tier.cooldownSeconds * 1000 - timeSinceLastPlaced) / 1000)} seconds`
-        }, { status: 429 });
-      }
-    }
-
-    // Get user data safely
-    const userData = await redis.hget('users', walletAddress);
-    const userInfo = userData ? 
-      (typeof userData === 'string' ? JSON.parse(userData) : userData) : 
-      {};
-
-    const balance = await getTokenBalance(walletAddress);
-    
     const pixelData = {
       id: `${x}-${y}-${Date.now()}`,
       x,
@@ -257,8 +269,8 @@ export async function POST(request: Request) {
       color,
       wallet_address: walletAddress,
       placed_at: new Date().toISOString(),
-      farcaster_username: userInfo.farcaster_username,
-      farcaster_pfp: userInfo.farcaster_pfp,
+      farcaster_username: user?.farcaster_username,
+      farcaster_pfp: user?.farcaster_pfp,
       token_balance: balance
     };
 
