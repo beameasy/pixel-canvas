@@ -93,17 +93,30 @@ export default function Ticker() {
         console.error('Failed to load initial ticker data:', error);
       }
 
-      // Set up Pusher after initial data load
+      // Check connection and force reconnect if needed
       if (!pusherManager.isConnected()) {
         console.log('🔄 Ticker: Reconnecting Pusher');
         pusherManager.reconnect();
       }
+      
+      // Subscribe after ensuring connection
       pusherManager.subscribe('pixel-placed', handlePixelPlaced);
     };
 
+    // Run initialize immediately
     initialize();
 
+    // Set up an interval to check connection status
+    const connectionCheck = setInterval(() => {
+      if (!pusherManager.isConnected()) {
+        console.log('🔄 Ticker: Connection lost, reconnecting...');
+        pusherManager.reconnect();
+        initialize(); // Re-initialize after reconnect
+      }
+    }, 30000); // Check every 30 seconds
+
     return () => {
+      clearInterval(connectionCheck);
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
     };
   }, []);
