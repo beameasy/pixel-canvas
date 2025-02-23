@@ -268,7 +268,7 @@ export async function POST(request: Request) {
       redis.hset('canvas:pixels', {
         [`${x},${y}`]: JSON.stringify(pixelData)
       }),
-      // History for leaderboard - fix zadd syntax
+      // History for leaderboard - using zadd for sorted set
       redis.zadd('canvas:history', {
         score: Date.now(),
         member: JSON.stringify(pixelData)
@@ -279,9 +279,16 @@ export async function POST(request: Request) {
       })
     ]);
 
-    // Calculate top users
-    const pixels = await redis.hgetall('canvas:pixels');
-    const topUsers = calculateTopUsers(Object.values(pixels || {}));
+    // Get recent history for top users calculation - using zrange for sorted set
+    const pixelHistory = await redis.zrange('canvas:history', 0, -1);
+    
+    // Remove the JSON.parse since the data is already parsed
+    const pixelsArray = pixelHistory.map(p => 
+      typeof p === 'string' ? JSON.parse(p) : p
+    );
+    
+    // Calculate top users from history
+    const topUsers = calculateTopUsers(pixelsArray);
 
     // Send both pixel and topUsers data in Pusher event
     await pusher.trigger('canvas', 'pixel-placed', { 
@@ -299,6 +306,7 @@ export async function POST(request: Request) {
 
 function calculateTopUsers(pixels: any[]) {
   const now = Date.now();
+  const ONE_HOUR = 60 * 60 * 1000;
 
   // Filter pixels from last hour and count by user
   const userCounts = pixels

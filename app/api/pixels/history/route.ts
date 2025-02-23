@@ -4,19 +4,20 @@ import { NextRequest } from 'next/server';
 
 export async function GET(request: Request) {
   try {
-    const pixels = await redis.hgetall('canvas:pixels');
-    const pixelsArray = Object.values(pixels || {})
-      .map(p => typeof p === 'string' ? JSON.parse(p) : p)
-      .sort((a, b) => new Date(b.placed_at).getTime() - new Date(a.placed_at).getTime())
-      .slice(0, 6)
-      .map(pixel => ({
-        ...pixel,
-        id: `${pixel.x}-${pixel.y}-${pixel.placed_at}`
-      }));
+    const { searchParams } = new URL(request.url);
+    const page = parseInt(searchParams.get('page') || '1');
+    const limit = parseInt(searchParams.get('limit') || '50');
+    const start = (page - 1) * limit;
+    const end = start + limit - 1;
 
-    return NextResponse.json(pixelsArray);
+    // Get items from newest to oldest using ZRANGE with REV option
+    const pixels = await redis.zrange('canvas:history', start, end, { 
+      rev: true 
+    });
+    
+    return NextResponse.json(pixels);
   } catch (error) {
-    console.error('Error fetching pixel history:', error);
-    return NextResponse.json([]);
+    console.error('Failed to fetch pixel history:', error);
+    return NextResponse.json({ error: 'Failed to fetch history' }, { status: 500 });
   }
 } 

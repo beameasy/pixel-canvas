@@ -66,6 +66,10 @@ type Tiers = Record<string, { refreshRate: number }>;
 // Add this type near the top of the file
 type GetUserTier = (address: string) => Promise<{ name: string }>;
 
+interface PixelPlacedEvent {
+  pixel: PixelData;
+}
+
 const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange, selectionMode, onClearSelection }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { user, login } = usePrivy();
@@ -156,6 +160,19 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Add these near your other state declarations
   const CACHE_DURATION = 60000; // Cache balances for 1 minute
 
+  // Add a ref to track the last load time
+  const lastLoadRef = useRef<number>(0);
+  const LOAD_COOLDOWN = 2000; // 2 seconds between loads
+
+  // Add a ref to track component mount status
+  const mountedRef = useRef(false);
+
+  // Add this ref near other refs
+  const userCheckRef = useRef(false);
+
+  // Modify the user profile useEffect to use a ref instead of state
+  const profileCheckedRef = useRef(false);
+
   useEffect(() => {
     const updateCanvasSize = () => {
       if (containerRef.current) {
@@ -229,28 +246,22 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Update the loadCanvasState function
   const loadCanvasState = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastLoadRef.current < LOAD_COOLDOWN) {
+      console.log('🔵 Skipping load - too soon');
+      return;
+    }
+    
+    console.log('🔵 Loading canvas state... Triggered by:', new Error().stack);
+    lastLoadRef.current = now;
+    
     try {
       console.log('🔵 Loading canvas state...');
-      const response = await fetch('/api/canvas', {
-        headers: {
-          'x-wallet-address': address || '',
-        }
-      });
       
-      if (response.status === 304 && pixels.size > 0) {
-        console.log('🔵 Canvas data unchanged');
-        return;
-      }
-      
-      // Check for empty response
-      const text = await response.text();
-      if (!text) {
-        console.log('🔵 Empty response received');
-        return;
-      }
-
-      const data = JSON.parse(text);
+      const response = await fetch('/api/canvas');
+      const data = await response.json();
       console.log('🔵 Canvas data loaded:', { pixelCount: data.length });
+      
       setPixels(new Map(data.map((pixel: any) => [
         `${pixel.x},${pixel.y}`, 
         pixel
@@ -258,17 +269,51 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     } catch (error) {
       console.error('Failed to load canvas state:', error);
     }
-  }, [address, pixels.size]);
+  }, []);
 
-  // Just initial load, no interval
+  // Replace the initial load useEffect
   useEffect(() => {
-    loadCanvasState(true);
-  }, [loadCanvasState]);
+    if (mountedRef.current) return; // Only load once
+    mountedRef.current = true;
+
+    const loadInitial = async () => {
+      try {
+        console.log('🔵 Initial canvas load');
+        const response = await fetch('/api/canvas');
+        const data = await response.json();
+        setPixels(new Map(data.map((pixel: any) => [
+          `${pixel.x},${pixel.y}`, 
+          pixel
+        ])));
+      } catch (error) {
+        console.error('Failed to load canvas:', error);
+      }
+    };
+
+    loadInitial();
+
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []); // Empty dependency array
 
   // Real-time updates via Pusher
   useEffect(() => {
     const channel = getCanvasChannel();
-    channel.bind('pixel-placed', (data) => {
+    
+    // Handle connection state
+    channel.bind('pusher:subscription_succeeded', () => {
+      setPusherConnected(true);
+    });
+
+    channel.bind('pusher:subscription_error', () => {
+      console.error('Pusher subscription failed');
+      setPusherConnected(false);
+    });
+
+    // Handle pixel updates
+    channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
+      if (!pusherConnected) return;
       setPixels(prev => {
         const newPixels = new Map(prev);
         newPixels.set(`${data.pixel.x},${data.pixel.y}`, data.pixel);
@@ -276,20 +321,25 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       });
     });
 
-    return () => channel.unbind('pixel-placed');
-  }, []);
+    return () => {
+      channel.unbind_all();
+      channel.unsubscribe();
+      setPusherConnected(false);
+    };
+  }, []); // Empty dependency array
 
-  // 2. User profile loading - only when needed
+  // Replace the user profile useEffect
   useEffect(() => {
-    if (!address || userProfile) return;
+    if (!address || !user?.id || profileCheckedRef.current) return;
     
-    const loadProfile = async () => {
+    const checkProfile = async () => {
       try {
+        console.log('🔵 Checking profile for:', address);
         const response = await fetch(`/api/users/check-profile`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            privy_id: user?.id,
+            privy_id: user.id,
             wallet_address: address.toLowerCase()
           })
         });
@@ -297,14 +347,15 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         if (response.ok) {
           const data = await response.json();
           setUserProfile(data);
+          profileCheckedRef.current = true;
         }
       } catch (error) {
-        console.error('Failed to load profile:', error);
+        console.error('Failed to check profile:', error);
       }
     };
 
-    loadProfile();
-  }, [address, userProfile, user?.id]);
+    checkProfile();
+  }, [address, user?.id]); // Remove profileChecked from dependencies
 
   // 3. Defer non-critical UI setup
   useEffect(() => {
@@ -1314,64 +1365,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     needsRender.current = true;
   }, [containerRef.current, canvasRef.current]);
-
-  useEffect(() => {
-    const channel = getCanvasChannel();
-    
-    // Add connection handlers
-    channel.bind('pusher:subscription_succeeded', () => {
-      setPusherConnected(true);
-    });
-
-    channel.bind('pusher:subscription_error', () => {
-      console.error('Pusher subscription failed');
-      // Force reconnect after delay
-      setTimeout(() => {
-        channel.subscribe();
-      }, 2000);
-    });
-
-    // Handle disconnections
-    channel.bind('pusher:disconnected', () => {
-      setPusherConnected(false);
-      // Attempt to reconnect
-      setTimeout(() => {
-        channel.subscribe();
-      }, 1000);
-    });
-
-    // Set connection timeout
-    const timeout = setTimeout(() => {
-      if (!pusherConnected) {
-        console.log('Pusher connection timeout, forcing reconnect');
-        channel.unsubscribe();
-        channel.subscribe();
-      }
-    }, 5000);
-
-    return () => {
-      clearTimeout(timeout);
-      channel.unbind_all();
-      channel.unsubscribe();
-    };
-  }, []);
-
-  // When fetching pixel data for tooltip
-  const fetchPixelData = async (x: number, y: number) => {
-    console.log('🔍 Fetching pixel data:', { x, y });
-    const response = await fetch(`/api/pixels?x=${x}&y=${y}`);
-    const data = await response.json();
-    console.log('🔍 Received pixel data:', data);
-    return data;
-  };
-
-  const handlePixelPlaced = useCallback((data: any) => {
-    setPixels(prev => {
-      const newPixels = new Map(prev);
-      newPixels.set(`${data.pixel.x},${data.pixel.y}`, data.pixel);
-      return newPixels;
-    });
-  }, []);
 
   return (
     <div 

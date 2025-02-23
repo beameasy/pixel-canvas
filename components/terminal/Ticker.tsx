@@ -6,7 +6,7 @@ import { pusherManager } from '@/lib/client/pusherManager';
 
 interface TopUser {
   wallet_address: string;
-  count: number;
+  count: number;  // Total number of pixels placed in last hour (including duplicates)
   farcaster_username: string | null;
   farcaster_pfp: string | null;
 }
@@ -75,9 +75,15 @@ export default function Ticker() {
       }
     };
 
-    const fetchInitialData = async () => {
+    // Fetch initial data and set up Pusher subscription
+    const initialize = async () => {
       try {
-        const response = await fetch('/api/ticker');
+        const response = await fetch('/api/ticker', {
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        });
         const data = await response.json();
         if (Array.isArray(data) && data.length > 0) {
           setUsers(data);
@@ -86,16 +92,16 @@ export default function Ticker() {
       } catch (error) {
         console.error('Failed to load initial ticker data:', error);
       }
+
+      // Set up Pusher after initial data load
+      if (!pusherManager.isConnected()) {
+        console.log('🔄 Ticker: Reconnecting Pusher');
+        pusherManager.reconnect();
+      }
+      pusherManager.subscribe('pixel-placed', handlePixelPlaced);
     };
 
-    // Check connection and force reconnect if needed
-    if (!pusherManager.isConnected()) {
-      console.log('🔄 Ticker: Reconnecting Pusher');
-      pusherManager.reconnect();
-    }
-
-    fetchInitialData();
-    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+    initialize();
 
     return () => {
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);

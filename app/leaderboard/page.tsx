@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { pusherManager } from '@/lib/client/pusherManager';
 
 interface LeaderboardEntry {
   wallet_address: string;
@@ -19,9 +20,18 @@ export default function Leaderboard() {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
   useEffect(() => {
+    const handlePixelPlaced = (data: { topUsers: any[] }) => {
+      fetchLeaderboard();
+    };
+
     const fetchLeaderboard = async () => {
       try {
-        const response = await fetch('/api/leaderboard');
+        const response = await fetch('/api/leaderboard', {
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+          }
+        });
         const data = await response.json();
         setUsers(Array.isArray(data) ? data : []);
       } catch (error) {
@@ -33,6 +43,17 @@ export default function Leaderboard() {
     };
 
     fetchLeaderboard();
+
+    if (!pusherManager.isConnected()) {
+      console.log('🔄 Leaderboard: Reconnecting Pusher');
+      pusherManager.reconnect();
+    }
+    
+    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+
+    return () => {
+      pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
+    };
   }, []);
 
   const handleSort = (field: keyof LeaderboardEntry) => {

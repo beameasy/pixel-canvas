@@ -38,6 +38,8 @@ export async function GET() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 10);
 
+    const pixelHistory = await redis.zrange('canvas:history', 0, -1);
+
     return NextResponse.json(topUsers);
   } catch (error) {
     console.error('Error fetching ticker data:', error);
