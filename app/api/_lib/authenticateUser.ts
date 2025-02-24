@@ -6,6 +6,7 @@ interface User {
   wallet_address: string;
   farcaster_username?: string | null;
   farcaster_pfp?: string | null;
+  privy_id?: string;
 }
 
 const JWKS = createRemoteJWKSet(
@@ -36,6 +37,7 @@ export async function authenticateUser(request: Request): Promise<User | null> {
     // We can add additional checks later if needed
     return {
       wallet_address: walletAddress,
+      privy_id: payload.sub
     };
   } catch (error) {
     console.error('Auth error:', error);

@@ -6,7 +6,6 @@ import { Minimap } from './MiniMap';
 import { useFarcasterUser } from '@/components/farcaster/hooks/useFarcasterUser';
 import { getCanvasChannel } from '@/lib/client/pusher';
 import { debounce } from 'lodash';
-import { pusherManager } from '@/lib/client/pusherManager';
 import FlashMessage from '@/components/ui/FlashMessage';
 import { TIERS, DEFAULT_TIER } from '@/lib/server/tiers.config';
 
@@ -63,12 +62,16 @@ export interface CanvasRef {
 // Add type for TIERS if not already defined
 type Tiers = Record<string, { refreshRate: number }>;
 
-// Add this type near the top of the file
-type GetUserTier = (address: string) => Promise<{ name: string }>;
-
 interface PixelPlacedEvent {
   pixel: PixelData;
 }
+
+// Remove the getUserTier import and add this helper function
+const getClientTier = (balance: number) => {
+  // Match the tier logic from your server
+  const tier = TIERS.find(t => balance >= t.minTokens) || DEFAULT_TIER;
+  return tier;
+};
 
 const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange, selectionMode, onClearSelection }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -172,6 +175,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Modify the user profile useEffect to use a ref instead of state
   const profileCheckedRef = useRef(false);
+
+  // Add this near the top with other state declarations
+  const [isCheckingProfile, setIsCheckingProfile] = useState(false);
+
+  // Add new state near other state declarations
+  const [cooldownSeconds, setCooldownSeconds] = useState<number>(0);
+  const [nextPlacementTime, setNextPlacementTime] = useState<number | null>(null);
 
   useEffect(() => {
     const updateCanvasSize = () => {
@@ -330,32 +340,65 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Replace the user profile useEffect
   useEffect(() => {
-    if (!address || !user?.id || profileCheckedRef.current) return;
+    if (!address || !user?.id || profileCheckedRef.current || isCheckingProfile) return;
+    
+    let isMounted = true;
     
     const checkProfile = async () => {
       try {
-        console.log('🔵 Checking profile for:', address);
-        const response = await fetch(`/api/users/check-profile`, {
+        setIsCheckingProfile(true);
+        const normalizedAddress = address.toLowerCase();
+        console.log('🔵 Checking profile for:', normalizedAddress);
+        
+        const token = await getAccessToken();
+        const response = await fetch('/api/users/check-profile', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            privy_id: user.id,
-            wallet_address: address.toLowerCase()
+          headers: {
+            'Content-Type': 'application/json',
+            'x-wallet-address': normalizedAddress,
+            ...(token && { 'x-privy-token': token })
+          },
+          body: JSON.stringify({ 
+            wallet_address: normalizedAddress,
+            privy_id: user.id 
           })
         });
+
+        if (!isMounted) return;
+
+        const data = await response.json();
         
-        if (response.ok) {
-          const data = await response.json();
-          setUserProfile(data);
-          profileCheckedRef.current = true;
+        if (!response.ok) {
+          console.error('❌ Profile check failed:', data.error);
+          return;
         }
+        
+        console.log('🔵 Profile loaded:', data);
+        setUserProfile(prev => ({
+          farcaster_username: prev?.farcaster_username ?? null,
+          farcaster_pfp: prev?.farcaster_pfp ?? null,
+          token_balance: Number(data.balance),
+          ...(prev?.last_active && { last_active: prev.last_active }),
+          ...(prev?.updated_at && { updated_at: prev.updated_at })
+        }));
+        profileCheckedRef.current = true;
+
       } catch (error) {
-        console.error('Failed to check profile:', error);
+        if (!isMounted) return;
+        console.error('❌ Error checking profile:', error);
+      } finally {
+        if (isMounted) {
+          setIsCheckingProfile(false);
+        }
       }
     };
 
     checkProfile();
-  }, [address, user?.id]); // Remove profileChecked from dependencies
+
+    return () => {
+      isMounted = false;
+    };
+  }, [address, user?.id, isCheckingProfile]);
 
   // 3. Defer non-critical UI setup
   useEffect(() => {
@@ -755,9 +798,70 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     console.log('Privy user:', user);
   }, [user]);
 
-  // Modify handlePlacePixel to handle cooldown in the response
+  // Add a function to fetch balance
+  const fetchBalance = useCallback(async () => {
+    if (!address || !user?.id) return;
+    
+    try {
+      const token = await getAccessToken();
+      const response = await fetch('/api/users/balance', {
+        headers: {
+          'x-wallet-address': address,
+          ...(token && { 'x-privy-token': token })
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch balance');
+      }
+      
+      const data = await response.json();
+      console.log('🔵 Balance response:', data);
+      
+      if (data.balance !== undefined) {
+        setUserProfile(prev => ({
+          farcaster_username: prev?.farcaster_username ?? null,
+          farcaster_pfp: prev?.farcaster_pfp ?? null,
+          token_balance: Number(data.balance),
+          ...(prev?.last_active && { last_active: prev.last_active }),
+          ...(prev?.updated_at && { updated_at: prev.updated_at })
+        }));
+        console.log('🔵 User profile updated:', { 
+          balance: Number(data.balance), 
+          timestamp: Date.now() 
+        });
+      }
+    } catch (error) {
+      console.error('Failed to fetch balance:', error);
+    }
+  }, [address, user?.id]);
+
+  // Fetch balance on mount and when address/user changes
+  useEffect(() => {
+    fetchBalance();
+  }, [fetchBalance]);
+
+  // Listen for pixel placement events
+  useEffect(() => {
+    if (!address) return;
+
+    const channel = getCanvasChannel();
+    channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
+      if (data.pixel.wallet_address?.toLowerCase() === address.toLowerCase()) {
+        fetchBalance();
+      }
+    });
+
+    return () => {
+      channel.unbind('pixel-placed');
+    };
+  }, [address, fetchBalance]);
+
+  // Update handlePlacePixel to fetch balance after placement
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
+      console.log('🎨 Placing pixel:', { x, y, color, address });
+      
       const response = await fetch('/api/pixels', {
         method: 'POST',
         headers: {
@@ -769,22 +873,25 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       });
 
       const data = await response.json();
-      
+      console.log('🔍 Server response:', { status: response.status, data });
+
       if (!response.ok) {
-        setFlashMessage(data.error || 'Failed to place pixel');
-        return;
+        throw new Error(data.error || 'Failed to place pixel');
       }
 
-      // Only update the pixel visually after successful placement
+      // Update pixels
       setPixels(prev => {
         const newPixels = new Map(prev);
         newPixels.set(`${x},${y}`, data.pixel);
         return newPixels;
       });
 
+      // Fetch updated balance
+      await fetchBalance();
+
     } catch (error) {
       console.error('Failed to place pixel:', error);
-      setFlashMessage('Failed to place pixel');
+      setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
     }
   };
 
@@ -873,35 +980,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }, 500),
     []
   );
-
-  useEffect(() => {
-    if (user?.id && address) {
-      console.log('🔵 Creating user:', { 
-        privy_id: user.id, 
-        wallet_address: address.toLowerCase()
-      });
-      fetch('/api/users/check-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          privy_id: user.id,
-          wallet_address: address.toLowerCase()
-        })
-      })
-      .then(async res => {
-        const data = await res.json();
-        console.log('🔵 Response from check-profile:', data);
-        if (!res.ok) {
-          throw new Error(data.error || 'Failed to check profile');
-        }
-        setUserProfile(data);
-      })
-      .catch(error => {
-        console.error('🔴 Error checking profile:', error.message);
-        setFlashMessage(error.message);
-      });
-    }
-  }, [user?.id, address]);
 
   useEffect(() => {
     // Set initial size
@@ -1366,6 +1444,76 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     needsRender.current = true;
   }, [containerRef.current, canvasRef.current]);
 
+  // Add this effect to update the cooldown timer
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (nextPlacementTime) {
+        const now = Date.now();
+        if (now >= nextPlacementTime) {
+          setNextPlacementTime(null);
+        }
+        // Force re-render for countdown
+        setCurrentTime(now);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [nextPlacementTime]);
+
+  // Add this near the top of your file with other helper functions
+  const formatBillboardAmount = (amount: number): string => {
+    if (amount >= 1_000_000_000) return `${(amount / 1_000_000_000).toFixed(2)}B`;
+    if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(2)}M`;
+    if (amount >= 1_000) return `${(amount / 1_000).toFixed(2)}K`;
+    return amount.toString();
+  };
+
+  // Add this effect to monitor userProfile changes
+  useEffect(() => {
+    console.log('🔵 User profile updated:', {
+      balance: userProfile?.token_balance,
+      timestamp: userProfile?.updated_at
+    });
+  }, [userProfile]);
+
+  // Modify the balance fetch effect
+  useEffect(() => {
+    if (!address) {
+      console.log('🔵 No address available for balance fetch');
+      return;
+    }
+    
+    const fetchBalance = async () => {
+      try {
+        console.log('🔵 Fetching balance for:', address);
+        const token = await getAccessToken();
+        const response = await fetch('/api/users/balance', {
+          headers: {
+            'x-wallet-address': address,
+            ...(token && { 'x-privy-token': token })
+          }
+        });
+        const data = await response.json();
+        console.log('🔵 Balance response:', data);
+        
+        if (response.ok && data.balance !== undefined) {
+          console.log('🔵 Setting new balance:', data.balance);
+          setUserProfile(prev => ({
+            farcaster_username: prev?.farcaster_username ?? null,
+            farcaster_pfp: prev?.farcaster_pfp ?? null,
+            token_balance: Number(data.balance),
+            ...(prev?.last_active && { last_active: prev.last_active }),
+            ...(prev?.updated_at && { updated_at: prev.updated_at })
+          }));
+        }
+      } catch (error) {
+        console.error('❌ Failed to fetch balance:', error);
+      }
+    };
+
+    fetchBalance();
+  }, [address]);
+
   return (
     <div 
       ref={containerRef}
@@ -1515,7 +1663,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             </div>
             {/* Tooltip balance */}
             <div className="text-amber-400 mt-0.5">
-              {formatNumber(hoverData?.pixel?.token_balance ?? 0)} $BILLBOARD
+              {formatBillboardAmount(hoverData?.pixel?.token_balance ?? 0)} $BILLBOARD
             </div>
             {hoverData?.pixel?.locked_until && Number(hoverData.pixel.locked_until) > Date.now() && (
               <div className="text-yellow-400 mt-0.5">
@@ -1557,6 +1705,17 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           />
         </div>
       )}
+      {/* Add status UI */}
+      <div className="absolute top-2 right-2 z-50 bg-neutral-900/90 rounded-lg px-2 py-1 text-xs font-mono flex flex-col items-end gap-0.5">
+        <div className="text-amber-400">
+          {formatBillboardAmount(userProfile?.token_balance || 0)} $BILLBOARD
+        </div>
+        <div className={!nextPlacementTime ? 'text-green-400' : 'text-neutral-400'}>
+          {!nextPlacementTime 
+            ? 'Ready to place!' 
+            : `Next Pixel: ${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`}
+        </div>
+      </div>
     </div>
   );
 });

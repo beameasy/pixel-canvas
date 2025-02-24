@@ -55,11 +55,20 @@ export async function POST(request: Request) {
 
     if (addressesToUpdate.length > 0) {
       await Promise.all(
-        addressesToUpdate.map(address => 
-          redis.hdel('users', address)
-        )
+        addressesToUpdate.map(async address => {
+          const userData = await redis.hget('users', address);
+          if (userData) {
+            const parsedData = typeof userData === 'string' ? JSON.parse(userData) : userData;
+            // Only nullify the balance, keep other user data
+            parsedData.token_balance = null;
+            parsedData.updated_at = new Date().toISOString();
+            await redis.hset('users', {
+              [address]: JSON.stringify(parsedData)
+            });
+          }
+        })
       );
-      console.log(`🔄 Invalidated cache for users:`, addressesToUpdate);
+      console.log(`🔄 Invalidated balance for users:`, addressesToUpdate);
     } else {
       console.log('👻 Transfer involved no cached users');
     }
