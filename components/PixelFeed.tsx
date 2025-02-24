@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { pusherManager } from '@/lib/client/pusherManager';
 import { motion, AnimatePresence } from 'framer-motion';
+import Image from 'next/image';
 
 interface PixelPlacement {
   id: string;
@@ -12,6 +13,7 @@ interface PixelPlacement {
   wallet_address: string;
   farcaster_username: string | null;
   placed_at: string;
+  farcaster_pfp?: string;
 }
 
 function LiveTimeAgo({ date }: { date: Date }) {
@@ -40,24 +42,36 @@ function PlacementMessage({ placement }: { placement: PixelPlacement }) {
       initial={{ scale: 1 }}
       animate={{ scale: [1, 1.02, 1] }}
       transition={{ duration: 0.2 }}
+      className="inline-flex items-center gap-2"
     >
       <LiveTimeAgo date={new Date(placement.placed_at)} />{' '}
-      <a 
-        href={placement.farcaster_username 
-          ? `https://warpcast.com/${placement.farcaster_username}`
-          : `https://basescan.org/address/${placement.wallet_address}`
-        }
-        target="_blank"
-        rel="noopener noreferrer"
-        className={`${
-          placement.farcaster_username ? "text-purple-400 hover:text-purple-300" : "text-blue-400 hover:text-blue-300"
-        }`}
-      >
-        {placement.farcaster_username ? 
-          `@${placement.farcaster_username}` : 
-          `${placement.wallet_address.slice(0, 4)}...${placement.wallet_address.slice(-4)}`
-        }
-      </a>
+      <span className="inline-flex items-center gap-2">
+        {placement.farcaster_pfp && (
+          <Image
+            src={placement.farcaster_pfp}
+            alt={placement.farcaster_username || placement.wallet_address}
+            width={16}
+            height={16}
+            className="rounded-full"
+          />
+        )}
+        <a 
+          href={placement.farcaster_username 
+            ? `https://warpcast.com/${placement.farcaster_username}`
+            : `https://basescan.org/address/${placement.wallet_address}`
+          }
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`${
+            placement.farcaster_username ? "text-purple-400 hover:text-purple-300" : "text-blue-400 hover:text-blue-300"
+          }`}
+        >
+          {placement.farcaster_username ? 
+            `@${placement.farcaster_username}` : 
+            `${placement.wallet_address.slice(0, 4)}...${placement.wallet_address.slice(-4)}`
+          }
+        </a>
+      </span>
       {` at `}
       <span style={{ color: placement.color }}>({placement.x}, {placement.y})</span>
     </motion.span>

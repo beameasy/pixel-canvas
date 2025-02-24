@@ -4,10 +4,11 @@ import Canvas from '@/components/canvas/CanvasV2';
 import PixelLogo from '@/components/ui/PixelLogo';
 import Controls from '@/components/layout/Controls';
 import { usePrivy } from '@privy-io/react-auth';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { AdminTools } from '@/components/admin/AdminTools';
 import PixelFeed from '@/components/PixelFeed';
 import { CanvasRef } from '@/components/canvas/CanvasV2';
+import { pusherManager } from '@/lib/client/pusherManager';
 
 export default function Home() {
   const { authenticated, user } = usePrivy();
@@ -74,6 +75,14 @@ export default function Home() {
       return { history: [], ticker: null };
     }
   };
+
+  // Add effect to handle wallet changes
+  useEffect(() => {
+    if (authenticated && user?.wallet?.address) {
+      console.log('🔄 Wallet changed, reconnecting Pusher');
+      pusherManager.reconnect();
+    }
+  }, [authenticated, user?.wallet?.address]);
 
   return (
     <div className="min-h-screen bg-slate-800 overflow-y-auto">

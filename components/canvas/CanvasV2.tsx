@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback, memo } from 'react';
+import React, { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback, memo, useMemo } from 'react';
 import { usePrivy, useWallets, getAccessToken } from '@privy-io/react-auth';
 import { Minimap } from './MiniMap';
 import { useFarcasterUser } from '@/components/farcaster/hooks/useFarcasterUser';
@@ -73,6 +73,14 @@ const getClientTier = (balance: number) => {
   return tier;
 };
 
+interface UserProfile {
+  farcaster_username: string | null;
+  farcaster_pfp: string | null;
+  token_balance?: number;
+  last_active?: string;
+  updated_at?: string;
+}
+
 const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange, selectionMode, onClearSelection }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { user, login } = usePrivy();
@@ -83,33 +91,35 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const animationFrameRef = useRef<number>(0);
   const pixelQueueRef = useRef<{x: number, y: number, color: string}[]>([]);
 
-  // State
-  const [pixels, setPixels] = useState<Map<string, PixelData>>(new Map());
-  const [isLoading, setIsLoading] = useState(true);
-  const [view, setView] = useState<ViewState>({
-    x: 0,
-    y: 0,
-    scale: 1
+  // Combine related state into objects to reduce re-renders
+  const [canvasState, setCanvasState] = useState({
+    pixels: new Map<string, PixelData>(),
+    isLoading: true,
+    view: {
+      x: 0,
+      y: 0,
+      scale: 1
+    }
   });
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
-  const [previewPixel, setPreviewPixel] = useState({ x: -1, y: -1 });
-  const [flashMessage, setFlashMessage] = useState<string | null>(null);
-  const [isSmallScreen, setIsSmallScreen] = useState(false);
-  const [pinchStart, setPinchStart] = useState(0);
-  const [pinchScale, setPinchScale] = useState(1);
-  const [clickStart, setClickStart] = useState<{ x: number, y: number, time: number } | null>(null);
-  const [userProfile, setUserProfile] = useState<{
-    farcaster_username: string | null;
-    farcaster_pfp: string | null;
-    token_balance: number;
-    last_active?: string;
-    updated_at?: string;
-  } | null>(null);
 
-  // Calculate dynamic canvas size
-  const [canvasSize, setCanvasSize] = useState(600); // Default value
+  const [interactionState, setInteractionState] = useState({
+    isDragging: false,
+    dragStart: { x: 0, y: 0 },
+    dragStartPos: { x: 0, y: 0 },
+    previewPixel: { x: -1, y: -1 }
+  });
+
+  // Use refs for values that don't need to trigger re-renders
+  const metricsRef = useRef({
+    lastLoadTime: 0,
+    lastPlacement: 0,
+    lastCanvasUpdate: 0
+  });
+
+  // 3. Memoize expensive calculations
+  const canvasSize = useMemo(() => {
+    return containerRef.current?.offsetWidth || 600;
+  }, [containerRef.current?.offsetWidth]);
 
   const [windowSize, setWindowSize] = useState({ width: 0, height: 0 });
 
@@ -183,10 +193,25 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const [cooldownSeconds, setCooldownSeconds] = useState<number>(0);
   const [nextPlacementTime, setNextPlacementTime] = useState<number | null>(null);
 
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+
+  const [isSmallScreen, setIsSmallScreen] = useState(false);
+
+  const [flashMessage, setFlashMessage] = useState<string | null>(null);
+
+  const [pinchStart, setPinchStart] = useState(0);
+  const [pinchScale, setPinchScale] = useState(1);
+
   useEffect(() => {
     const updateCanvasSize = () => {
       if (containerRef.current) {
-        setCanvasSize(containerRef.current.offsetWidth);
+        setCanvasState(prev => ({
+          ...prev,
+          view: {
+            ...prev.view,
+            scale: canvasSize / (GRID_SIZE * PIXEL_SIZE)
+          }
+        }));
       }
     };
 
@@ -196,7 +221,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     return () => {
       window.removeEventListener('resize', updateCanvasSize);
     };
-  }, []);
+  }, [canvasSize]);
 
   // Use dynamic canvas size in calculations
   const PIXEL_SIZE = canvasSize / GRID_SIZE;
@@ -213,11 +238,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const centerX = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
     const centerY = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
     
-    setView({
-      x: centerX,
-      y: centerY,
-      scale: scale
-    });
+    setCanvasState(prev => ({
+      ...prev,
+      view: {
+        x: centerX,
+        y: centerY,
+        scale: scale
+      }
+    }));
   }, [PIXEL_SIZE]); // Add PIXEL_SIZE as dependency
 
   // Add useEffect to check screen size
@@ -241,18 +269,39 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const ctx = canvasRef.current?.getContext('2d');
     if (!ctx) return;
 
-    // Convert grid coordinates to screen coordinates using current view
-    const screenX = x * PIXEL_SIZE * view.scale + view.x;
-    const screenY = y * PIXEL_SIZE * view.scale + view.y;
-
+    ctx.save();
+    
+    // Draw the pixel
     ctx.fillStyle = color;
     ctx.fillRect(
-      screenX,
-      screenY,
-      PIXEL_SIZE * view.scale,
-      PIXEL_SIZE * view.scale
+      x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x,
+      y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y,
+      PIXEL_SIZE * canvasState.view.scale,
+      PIXEL_SIZE * canvasState.view.scale
     );
-  }, [view, PIXEL_SIZE]);
+
+    // Redraw grid lines for this pixel if needed
+    if (canvasState.view.scale > 4) {
+      ctx.strokeStyle = '#CCCCCC';
+      ctx.lineWidth = 0.5;
+      
+      // Draw vertical grid line
+      const screenX = Math.floor(x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(screenX, y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y);
+      ctx.lineTo(screenX, (y + 1) * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y);
+      ctx.stroke();
+
+      // Draw horizontal grid line
+      const screenY = Math.floor(y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x, screenY);
+      ctx.lineTo((x + 1) * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x, screenY);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }, [canvasState.view, PIXEL_SIZE]);
 
   // Update the loadCanvasState function
   const loadCanvasState = useCallback(async (force = false) => {
@@ -272,40 +321,72 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       const data = await response.json();
       console.log('🔵 Canvas data loaded:', { pixelCount: data.length });
       
-      setPixels(new Map(data.map((pixel: any) => [
-        `${pixel.x},${pixel.y}`, 
-        pixel
-      ])));
+      setCanvasState(prev => ({
+        ...prev,
+        pixels: new Map(data.map((pixel: any) => [
+          `${pixel.x},${pixel.y}`, 
+          pixel
+        ])),
+        isLoading: false
+      }));
     } catch (error) {
       console.error('Failed to load canvas state:', error);
     }
   }, []);
 
-  // Replace the initial load useEffect
+  // Optimize the initial load effect
   useEffect(() => {
-    if (mountedRef.current) return; // Only load once
+    if (mountedRef.current) return;
     mountedRef.current = true;
 
     const loadInitial = async () => {
       try {
-        console.log('🔵 Initial canvas load');
-        const response = await fetch('/api/canvas');
-        const data = await response.json();
-        setPixels(new Map(data.map((pixel: any) => [
-          `${pixel.x},${pixel.y}`, 
-          pixel
-        ])));
+        const [canvasResponse, profileResponse] = await Promise.all([
+          fetch('/api/canvas'),
+          address ? fetch('/api/users/check-profile', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-wallet-address': address.toLowerCase(),
+              ...(user?.id && { 'x-privy-token': await getAccessToken() })
+            } as HeadersInit,
+            body: JSON.stringify({ 
+              wallet_address: address.toLowerCase(),
+              privy_id: user?.id 
+            })
+          }) : Promise.resolve(null)
+        ]);
+
+        const [canvasData, profileData] = await Promise.all([
+          canvasResponse.json(),
+          profileResponse?.json()
+        ]);
+
+        setCanvasState(prev => ({
+          ...prev,
+          pixels: new Map(canvasData.map((pixel: any) => [
+            `${pixel.x},${pixel.y}`, 
+            pixel
+          ])),
+          isLoading: false
+        }));
+
+        if (profileData) {
+          setUserProfile({
+            farcaster_username: null,
+            farcaster_pfp: null,
+            token_balance: Number(profileData.balance),
+            last_active: undefined,
+            updated_at: undefined
+          });
+        }
       } catch (error) {
-        console.error('Failed to load canvas:', error);
+        console.error('Failed to load initial data:', error);
       }
     };
 
     loadInitial();
-
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []); // Empty dependency array
+  }, [address, user?.id]);
 
   // Real-time updates via Pusher
   useEffect(() => {
@@ -324,10 +405,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Handle pixel updates
     channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
       if (!pusherConnected) return;
-      setPixels(prev => {
-        const newPixels = new Map(prev);
+      setCanvasState(prev => {
+        const newPixels = new Map(prev.pixels);
         newPixels.set(`${data.pixel.x},${data.pixel.y}`, data.pixel);
-        return newPixels;
+        return {
+          ...prev,
+          pixels: newPixels
+        };
       });
     });
 
@@ -338,67 +422,54 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     };
   }, []); // Empty dependency array
 
-  // Replace the user profile useEffect
+  // Single useEffect to handle profile and balance
   useEffect(() => {
-    if (!address || !user?.id || profileCheckedRef.current || isCheckingProfile) return;
-    
-    let isMounted = true;
+    if (!address || !user?.id || isCheckingProfile) return;
     
     const checkProfile = async () => {
       try {
         setIsCheckingProfile(true);
-        const normalizedAddress = address.toLowerCase();
-        console.log('🔵 Checking profile for:', normalizedAddress);
-        
-        const token = await getAccessToken();
+        const headers = new Headers({
+          'Content-Type': 'application/json',
+          'x-wallet-address': address.toLowerCase()
+        });
+        if (user?.id) {
+          const token = await getAccessToken();
+          if (token) headers.set('x-privy-token', token);
+        }
+
         const response = await fetch('/api/users/check-profile', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-wallet-address': normalizedAddress,
-            ...(token && { 'x-privy-token': token })
-          },
+          headers,
           body: JSON.stringify({ 
-            wallet_address: normalizedAddress,
+            wallet_address: address.toLowerCase(),
             privy_id: user.id 
           })
         });
 
-        if (!isMounted) return;
-
         const data = await response.json();
-        
-        if (!response.ok) {
-          console.error('❌ Profile check failed:', data.error);
-          return;
+        if (response.ok && data.balance !== undefined) {
+          // Only update if balance has changed
+          setUserProfile(prev => {
+            if (prev?.token_balance === Number(data.balance)) return prev;
+            return {
+              farcaster_username: prev?.farcaster_username ?? null,
+              farcaster_pfp: prev?.farcaster_pfp ?? null,
+              token_balance: Number(data.balance),
+              last_active: prev?.last_active,
+              updated_at: prev?.updated_at
+            };
+          });
         }
-        
-        console.log('🔵 Profile loaded:', data);
-        setUserProfile(prev => ({
-          farcaster_username: prev?.farcaster_username ?? null,
-          farcaster_pfp: prev?.farcaster_pfp ?? null,
-          token_balance: Number(data.balance),
-          ...(prev?.last_active && { last_active: prev.last_active }),
-          ...(prev?.updated_at && { updated_at: prev.updated_at })
-        }));
-        profileCheckedRef.current = true;
-
       } catch (error) {
-        if (!isMounted) return;
-        console.error('❌ Error checking profile:', error);
+        console.error('Failed to check profile:', error);
       } finally {
-        if (isMounted) {
-          setIsCheckingProfile(false);
-        }
+        setIsCheckingProfile(false);
       }
     };
 
     checkProfile();
-
-    return () => {
-      isMounted = false;
-    };
-  }, [address, user?.id, isCheckingProfile]);
+  }, [address, user?.id]);
 
   // 3. Defer non-critical UI setup
   useEffect(() => {
@@ -406,7 +477,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     
     const timer = setTimeout(() => {
       // Initialize tooltips, minimap after initial render
-      setIsLoading(false);
+      setCanvasState(prev => ({
+        ...prev,
+        isLoading: false
+      }));
     }, 100);
     
     return () => clearTimeout(timer);
@@ -434,9 +508,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         sample: data.slice(0, 1)
       });
 
-      setPixels(new Map(data.map((pixel: any) => 
-        [`${pixel.x},${pixel.y}`, pixel]
-      )));
+      setCanvasState(prev => ({
+        ...prev,
+        pixels: new Map(data.map((pixel: any) => 
+          [`${pixel.x},${pixel.y}`, pixel]
+        ))
+      }));
     } catch (error) {
       console.error('Failed to load pixels:', error);
       setFlashMessage('Failed to load canvas state');
@@ -451,11 +528,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const centerX = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
     const centerY = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
     
-    setView({
-      x: centerX,
-      y: centerY,
-      scale: scale
-    });
+    setCanvasState(prev => ({
+      ...prev,
+      view: {
+        x: centerX,
+        y: centerY,
+        scale: scale
+      }
+    }));
   };
 
   // Add the shareCanvas method
@@ -491,7 +571,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Update useImperativeHandle to expose the shareCanvas method
   useImperativeHandle(ref, () => ({
     resetView,
-    clearCanvas: () => setPixels(new Map()),
+    clearCanvas: () => setCanvasState(prev => ({
+      ...prev,
+      pixels: new Map()
+    })),
     shareCanvas
   }), [resetView, shareCanvas]);
 
@@ -503,11 +586,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Calculate grid position
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
-    const x = Math.floor((mouseX - view.x) / (PIXEL_SIZE * view.scale));
-    const y = Math.floor((mouseY - view.y) / (PIXEL_SIZE * view.scale));
+    const x = Math.floor((mouseX - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
+    const y = Math.floor((mouseY - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
 
     // Clear preview pixel when starting drag
-    setPreviewPixel({ x: -1, y: -1 });
+    setInteractionState(prev => ({
+      ...prev,
+      previewPixel: { x: -1, y: -1 }
+    }));
     const canvas = overlayCanvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (ctx && canvas) {
@@ -516,20 +602,29 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     // Right click or middle click is always drag
     if (e.button === 2 || e.button === 1) {
-      setIsDragging(true);
-      setDragStart({ x: e.clientX, y: e.clientY });
-      setDragStartPos({ x: view.x, y: view.y });
+      setInteractionState(prev => ({
+        ...prev,
+        isDragging: true,
+        dragStart: { x: e.clientX, y: e.clientY },
+        dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
+      }));
       return;
     }
 
     // Normal pixel placement mode
     if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && e.button === 0 && address) {
-      setClickStart({ x, y, time: Date.now() });
+      setInteractionState(prev => ({
+        ...prev,
+        previewPixel: { x, y }
+      }));
     }
 
-    setIsDragging(true);
-    setDragStart({ x: e.clientX, y: e.clientY });
-    setDragStartPos({ x: view.x, y: view.y });
+    setInteractionState(prev => ({
+      ...prev,
+      isDragging: true,
+      dragStart: { x: e.clientX, y: e.clientY },
+      dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
+    }));
   };
 
   // Add this helper function
@@ -562,10 +657,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     // Only draw if within bounds and not dragging
-    if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && !isDragging) {
-      const screenX = Math.floor(x * PIXEL_SIZE * view.scale + view.x);
-      const screenY = Math.floor(y * PIXEL_SIZE * view.scale + view.y);
-      const pixelSize = Math.ceil(PIXEL_SIZE * view.scale);
+    if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && !interactionState.isDragging) {
+      const screenX = Math.floor(x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x);
+      const screenY = Math.floor(y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y);
+      const pixelSize = Math.ceil(PIXEL_SIZE * canvasState.view.scale);
       
       ctx.fillStyle = selectedColor + '80'; // 50% opacity
       ctx.fillRect(
@@ -575,7 +670,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         pixelSize
       );
     }
-  }, [view, PIXEL_SIZE, selectedColor, isDragging]);
+  }, [canvasState.view, selectedColor, interactionState.isDragging]);
 
   // Update handleMouseMove
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
@@ -585,24 +680,27 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const canvasX = (e.clientX - rect.left);
     const canvasY = (e.clientY - rect.top);
     
-    const x = Math.floor((canvasX - view.x) / (PIXEL_SIZE * view.scale));
-    const y = Math.floor((canvasY - view.y) / (PIXEL_SIZE * view.scale));
+    const x = Math.floor((canvasX - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
+    const y = Math.floor((canvasY - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
 
     // Only draw preview if not dragging
-    if (!isDragging) {
+    if (!interactionState.isDragging) {
       drawPreviewPixel(x, y);
       onMousePosChange({ x, y });
     }
 
     // Handle dragging
-    if (isDragging) {
-      const dx = e.clientX - dragStart.x;
-      const dy = e.clientY - dragStart.y;
+    if (interactionState.isDragging) {
+      const dx = e.clientX - interactionState.dragStart.x;
+      const dy = e.clientY - interactionState.dragStart.y;
       
-      setView(prev => ({
+      setCanvasState(prev => ({
         ...prev,
-        x: dragStartPos.x + dx,
-        y: dragStartPos.y + dy
+        view: {
+          ...prev.view,
+          x: interactionState.dragStartPos.x + dx,
+          y: interactionState.dragStartPos.y + dy
+        }
       }));
       return; // Exit early if dragging
     }
@@ -610,21 +708,21 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Update hover data for tooltip
     if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
       const key = `${x},${y}`;
-      const pixelData = pixels.get(key);
+      const pixelData = canvasState.pixels.get(key);
 
-      if (view.scale >= TOOLTIP_ZOOM_THRESHOLD) {
+      if (canvasState.view.scale >= TOOLTIP_ZOOM_THRESHOLD) {
         setHoverData({
           x,
           y,
-          screenX: x * PIXEL_SIZE * view.scale + view.x,
-          screenY: y * PIXEL_SIZE * view.scale + view.y,
+          screenX: x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x,
+          screenY: y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y,
           pixel: pixelData || null
         });
       }
     } else {
       setHoverData(null);
     }
-  }, [pixels, view, PIXEL_SIZE, isDragging, dragStart, dragStartPos, onMousePosChange, drawPreviewPixel]);
+  }, [canvasState.pixels, canvasState.view, interactionState.isDragging, interactionState.dragStart, interactionState.dragStartPos, onMousePosChange, drawPreviewPixel]);
 
   const handleMouseLeave = useCallback(() => {
     drawPreviewPixel(-1, -1);
@@ -633,17 +731,20 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Modify handleMouseUp
   const handleMouseUp = async (e: React.MouseEvent) => {
-    if (!isDragging) return;
+    if (!interactionState.isDragging) return;
 
-    const dx = Math.abs(e.clientX - dragStart.x);
-    const dy = Math.abs(e.clientY - dragStart.y);
+    const dx = Math.abs(e.clientX - interactionState.dragStart.x);
+    const dy = Math.abs(e.clientY - interactionState.dragStart.y);
     const hasMoved = dx > 5 || dy > 5;
 
-    setIsDragging(false);
+    setInteractionState(prev => ({
+      ...prev,
+      isDragging: false
+    }));
 
     // Only place pixel if it's a left click, hasn't moved much, and we have a valid click start
-    if (e.button === 0 && !hasMoved && clickStart && address) {
-      const { x, y } = clickStart;
+    if (e.button === 0 && !hasMoved && interactionState.previewPixel && address) {
+      const { x, y } = interactionState.previewPixel;
       try {
         await handlePlacePixel(x, y, selectedColor);
       } catch (error) {
@@ -653,8 +754,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         }
       }
     }
-    
-    setClickStart(null);
   };
 
   // Clean up timeout on unmount
@@ -666,115 +765,73 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     };
   }, [tooltipTimeout]);
 
-  // Add render callback
-  const render = useCallback(() => {
+  // Optimize render function with useMemo
+  const render = useMemo(() => {
     if (!canvasRef.current || !needsRender.current) return;
     
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) return;
+    return () => {
+      const ctx = canvasRef.current?.getContext('2d');
+      if (!ctx) return;
 
-    // Clear canvas with gray background
-    ctx.fillStyle = '#2C2C2C';
-    ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-
-    const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * view.scale;
-    const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * view.scale;
-    
-    // Draw white background
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillRect(
-      view.x,
-      view.y,
-      gridPixelWidth,
-      gridPixelHeight
-    );
-
-    // Draw pixels
-    pixels.forEach((pixel, key) => {
-      const [x, y] = key.split(',').map(Number);
-      const screenX = x * PIXEL_SIZE * view.scale + view.x;
-      const screenY = y * PIXEL_SIZE * view.scale + view.y;
+      ctx.save();
       
-      ctx.fillStyle = pixel.color;
+      // First fill entire canvas with dark background
+      ctx.fillStyle = '#1F1F1F'; // Dark gray background
+      ctx.fillRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
+
+      // Draw white background only for the pixel grid area
+      const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * canvasState.view.scale;
+      const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * canvasState.view.scale;
+      ctx.fillStyle = '#FFFFFF';
       ctx.fillRect(
-        screenX,
-        screenY,
-        PIXEL_SIZE * view.scale,
-        PIXEL_SIZE * view.scale
+        canvasState.view.x,
+        canvasState.view.y,
+        gridPixelWidth,
+        gridPixelHeight
       );
-    });
 
-    // Draw preview pixel if valid position
-    if (previewPixel.x !== -1 && previewPixel.y !== -1 && !isDragging) {
-      const screenX = previewPixel.x * PIXEL_SIZE * view.scale + view.x;
-      const screenY = previewPixel.y * PIXEL_SIZE * view.scale + view.y;
-      
-      ctx.fillStyle = selectedColor + '80'; // 50% opacity
-      ctx.fillRect(
-        screenX,
-        screenY,
-        PIXEL_SIZE * view.scale,
-        PIXEL_SIZE * view.scale
-      );
-    }
+      // Draw all pixels
+      canvasState.pixels.forEach((pixel, key) => {
+        const [x, y] = key.split(',').map(Number);
+        ctx.fillStyle = pixel.color;
+        ctx.fillRect(
+          x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x,
+          y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y,
+          PIXEL_SIZE * canvasState.view.scale,
+          PIXEL_SIZE * canvasState.view.scale
+        );
+      });
 
-    // Draw grid when zoomed in
-    if (view.scale > 4) {
-      ctx.strokeStyle = '#CCCCCC';
-      ctx.lineWidth = 0.5;
-      
-      for (let x = 0; x <= GRID_SIZE; x++) {
-        const screenX = x * PIXEL_SIZE * view.scale + view.x;
-        ctx.beginPath();
-        ctx.moveTo(screenX, view.y);
-        ctx.lineTo(screenX, GRID_SIZE * PIXEL_SIZE * view.scale + view.y);
-        ctx.stroke();
+      // Always draw grid when zoomed in
+      if (canvasState.view.scale > 4) {
+        ctx.strokeStyle = '#CCCCCC';
+        ctx.lineWidth = 0.5;
+        
+        for (let x = 0; x <= GRID_SIZE; x++) {
+          const screenX = Math.floor(x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(screenX, canvasState.view.y);
+          ctx.lineTo(screenX, GRID_SIZE * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y);
+          ctx.stroke();
+        }
+
+        for (let y = 0; y <= GRID_SIZE; y++) {
+          const screenY = Math.floor(y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y) + 0.5;
+          ctx.beginPath();
+          ctx.moveTo(canvasState.view.x, screenY);
+          ctx.lineTo(GRID_SIZE * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x, screenY);
+          ctx.stroke();
+        }
       }
 
-      for (let y = 0; y <= GRID_SIZE; y++) {
-        const screenY = y * PIXEL_SIZE * view.scale + view.y;
-        ctx.beginPath();
-        ctx.moveTo(view.x, screenY);
-        ctx.lineTo(GRID_SIZE * PIXEL_SIZE * view.scale + view.x, screenY);
-        ctx.stroke();
-      }
-    }
-
-    // Draw border
-    ctx.strokeStyle = '#666666';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(
-      view.x,
-      view.y,
-      gridPixelWidth,
-      gridPixelHeight
-    );
-
-    // Draw selection rectangle if in selection mode
-    if (isSelectionMode && selectionStart && selectionEnd) {
-      const startX = Math.min(selectionStart.x, selectionEnd.x);
-      const startY = Math.min(selectionStart.y, selectionEnd.y);
-      const width = Math.abs(selectionEnd.x - selectionStart.x) + 1;
-      const height = Math.abs(selectionEnd.y - selectionStart.y) + 1;
-
-      ctx.strokeStyle = 'rgba(128, 0, 128, 0.8)'; // Purple, semi-transparent
-      ctx.lineWidth = 2;
-      ctx.setLineDash([5, 5]); // Dashed line
-      ctx.strokeRect(
-        startX * PIXEL_SIZE * view.scale + view.x,
-        startY * PIXEL_SIZE * view.scale + view.y,
-        width * PIXEL_SIZE * view.scale,
-        height * PIXEL_SIZE * view.scale
-      );
-      ctx.setLineDash([]); // Reset line style
-    }
-
-    needsRender.current = false;
-  }, [pixels, view, previewPixel, selectedColor, isDragging, PIXEL_SIZE, isSelectionMode, selectionStart, selectionEnd]);
+      ctx.restore();
+      needsRender.current = false;
+    };
+  }, [canvasState.pixels, canvasState.view, PIXEL_SIZE]);
 
   // Add RAF loop
   const animate = useCallback(() => {
-    render();
+    if (render) render();
     rafRef.current = requestAnimationFrame(animate);
   }, [render]);
 
@@ -791,7 +848,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Request render when view or pixels change
   useEffect(() => {
     needsRender.current = true;
-  }, [view, pixels]);
+  }, [canvasState.view, canvasState.pixels]);
 
   // Add this to debug what data we have available
   useEffect(() => {
@@ -823,8 +880,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           farcaster_username: prev?.farcaster_username ?? null,
           farcaster_pfp: prev?.farcaster_pfp ?? null,
           token_balance: Number(data.balance),
-          ...(prev?.last_active && { last_active: prev.last_active }),
-          ...(prev?.updated_at && { updated_at: prev.updated_at })
+          last_active: prev?.last_active,
+          updated_at: prev?.updated_at
         }));
         console.log('🔵 User profile updated:', { 
           balance: Number(data.balance), 
@@ -860,8 +917,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Update handlePlacePixel to fetch balance after placement
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
-      console.log('🎨 Placing pixel:', { x, y, color, address });
+      // Optimistically draw the new pixel immediately
+      drawSinglePixel(x, y, color);
       
+      // Queue API request
       const response = await fetch('/api/pixels', {
         method: 'POST',
         headers: {
@@ -872,26 +931,49 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         body: JSON.stringify({ x, y, color })
       });
 
-      const data = await response.json();
-      console.log('🔍 Server response:', { status: response.status, data });
-
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to place pixel');
+        // Clear preview pixel on error
+        setInteractionState(prev => ({
+          ...prev,
+          previewPixel: { x: -1, y: -1 }
+        }));
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to place pixel');
       }
 
-      // Update pixels
-      setPixels(prev => {
-        const newPixels = new Map(prev);
+      // Update state without triggering full re-render
+      const data = await response.json();
+      setCanvasState(prev => {
+        const newPixels = new Map(prev.pixels);
         newPixels.set(`${x},${y}`, data.pixel);
-        return newPixels;
+        return {
+          ...prev,
+          pixels: newPixels
+        };
       });
 
-      // Fetch updated balance
       await fetchBalance();
+
+      // After successful placement
+      const cooldownMs = getClientTier(data.pixel.token_balance || 0).cooldownSeconds * 1000;
+      const nextTime = Date.now() + cooldownMs;
+      setNextPlacementTime(nextTime);
+      localStorage.setItem('nextPlacementTime', nextTime.toString());
+      
+      // Reset nextPlacementTime after cooldown
+      setTimeout(() => {
+        setNextPlacementTime(null);
+        localStorage.removeItem('nextPlacementTime');
+      }, cooldownMs);
 
     } catch (error) {
       console.error('Failed to place pixel:', error);
       setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
+      // Ensure preview pixel is cleared on any error
+      setInteractionState(prev => ({
+        ...prev,
+        previewPixel: { x: -1, y: -1 }
+      }));
     }
   };
 
@@ -918,23 +1000,29 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         touch2.clientY - touch2.clientY
       );
       setPinchStart(distance);
-      setPinchScale(view.scale);
+      setPinchScale(canvasState.view.scale);
     } else if (e.touches.length === 1) {
       const touch = e.touches[0];
-      const x = Math.floor((touch.clientX - rect.left - view.x) / (PIXEL_SIZE * view.scale));
-      const y = Math.floor((touch.clientY - rect.top - view.y) / (PIXEL_SIZE * view.scale));
+      const x = Math.floor((touch.clientX - rect.left - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
+      const y = Math.floor((touch.clientY - rect.top - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
 
       // Always set up for potential panning
-      setIsDragging(true);
-      setDragStart({
-        x: touch.clientX,
-        y: touch.clientY
-      });
-      setDragStartPos({ x: view.x, y: view.y });
+      setInteractionState(prev => ({
+        ...prev,
+        isDragging: true,
+        dragStart: {
+          x: touch.clientX,
+          y: touch.clientY
+        },
+        dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
+      }));
 
       // In place mode, also set up for potential pixel placement
       if (touchMode === 'place' && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && address) {
-        setClickStart({ x, y, time: Date.now() });
+        setInteractionState(prev => ({
+          ...prev,
+          previewPixel: { x, y }
+        }));
       }
     }
   };
@@ -942,27 +1030,32 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const handleTouchMove = (e: TouchEvent) => {
     e.preventDefault();
     
-    if (isDragging && e.touches.length === 1) {
+    if (interactionState.isDragging && e.touches.length === 1) {
       const touch = e.touches[0];
-      const dx = touch.clientX - dragStart.x;
-      const dy = touch.clientY - dragStart.y;
+      const dx = touch.clientX - interactionState.dragStart.x;
+      const dy = touch.clientY - interactionState.dragStart.y;
       
-      setView(prev => ({
+      setCanvasState(prev => ({
         ...prev,
-        x: dragStartPos.x + dx,
-        y: dragStartPos.y + dy
+        view: {
+          ...prev.view,
+          x: interactionState.dragStartPos.x + dx,
+          y: interactionState.dragStartPos.y + dy
+        }
       }));
     }
   };
 
   const handleTouchEnd = (e: TouchEvent) => {
-    if (clickStart && !isDragging) {
+    if (interactionState.previewPixel && !interactionState.isDragging) {
       // Only place pixel if we haven't dragged
-      handlePlacePixel(clickStart.x, clickStart.y, selectedColor);
+      handlePlacePixel(interactionState.previewPixel.x, interactionState.previewPixel.y, selectedColor);
     }
-    setIsDragging(false);
+    setInteractionState(prev => ({
+      ...prev,
+      isDragging: false
+    }));
     setPinchStart(0);
-    setClickStart(null);
   };
 
   // Add this helper function
@@ -1010,7 +1103,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     if (ctx && canvas) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
     }
-    setPreviewPixel({ x: -1, y: -1 });
+    setInteractionState(prev => ({
+      ...prev,
+      previewPixel: { x: -1, y: -1 }
+    }));
     
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -1018,15 +1114,18 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    setView(prev => {
+    setCanvasState(prev => {
       const delta = e.deltaY;
       const scaleChange = delta > 0 ? 0.9 : 1.1;
-      const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.scale * scaleChange));
+      const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.view.scale * scaleChange));
       
       return {
-        scale: newScale,
-        x: mouseX - (mouseX - prev.x) * (newScale / prev.scale),
-        y: mouseY - (mouseY - prev.y) * (newScale / prev.scale)
+        ...prev,
+        view: {
+          scale: newScale,
+          x: mouseX - (mouseX - prev.view.x) * (newScale / prev.view.scale),
+          y: mouseY - (mouseY - prev.view.y) * (newScale / prev.view.scale)
+        }
       };
     });
   }, []);
@@ -1074,7 +1173,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       canvas.removeEventListener('touchmove', handleTouchMove);
       canvas.removeEventListener('touchend', handleTouchEnd);
     };
-  }, [view.scale]);
+  }, [canvasState.view.scale]);
 
   const toggleTouchMode = () => {
     onTouchModeChange(touchMode === 'view' ? 'place' : 'view');
@@ -1086,18 +1185,18 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     if (!rect) return;
 
     const touch = e.touches[0];
-    const x = Math.floor((touch.clientX - rect.left - view.x) / (PIXEL_SIZE * view.scale));
-    const y = Math.floor((touch.clientY - rect.top - view.y) / (PIXEL_SIZE * view.scale));
+    const x = Math.floor((touch.clientX - rect.left - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
+    const y = Math.floor((touch.clientY - rect.top - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
 
     if (touchMode === 'place' && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && address) {
       handlePlacePixel(x, y, selectedColor);
     } else if (touchMode === 'view' && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
       // Show tooltip without timeout - will persist until next touch
       const key = `${x},${y}`;
-      const pixelData = pixels.get(key);
+      const pixelData = canvasState.pixels.get(key);
       if (pixelData) {
-        const screenX = x * PIXEL_SIZE * view.scale + view.x;
-        const screenY = y * PIXEL_SIZE * view.scale + view.y;
+        const screenX = x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x;
+        const screenY = y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y;
         setHoverData({
           x,
           y,
@@ -1111,12 +1210,15 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
 
     // Handle panning
-    setIsDragging(false);
-    setDragStart({
-      x: touch.clientX,
-      y: touch.clientY
-    });
-    setDragStartPos({ x: view.x, y: view.y });
+    setInteractionState(prev => ({
+      ...prev,
+      isDragging: false,
+      dragStart: {
+        x: touch.clientX,
+        y: touch.clientY
+      },
+      dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
+    }));
   };
 
   const handleReactTouchMove = (e: React.TouchEvent) => {
@@ -1130,9 +1232,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Clear tooltip when touch ends
     setHoverData(null);
     
-    setIsDragging(false);
-    setPinchStart(0);
-    setClickStart(null);
+    setInteractionState(prev => ({
+      ...prev,
+      isDragging: false
+    }));
   };
 
   // Add useEffect to monitor canvasRef
@@ -1156,73 +1259,73 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Render canvas
   useEffect(() => {
-    if (isLoading || !canvasRef.current) return;
+    if (canvasState.isLoading || !canvasRef.current) return;
 
     const ctx = canvasRef.current.getContext('2d');
     if (!ctx) return;
 
-    // Clear canvas with gray background
-    ctx.fillStyle = '#2C2C2C';
+    // First fill entire canvas with dark background
+    ctx.fillStyle = '#1F1F1F'; // Dark gray background
     ctx.fillRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
-    // Draw white background for the pixel grid area
-    const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * view.scale;
-    const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * view.scale;
+    // Draw white background only for the pixel grid area
+    const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * canvasState.view.scale;
+    const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * canvasState.view.scale;
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(
-      view.x,
-      view.y,
+      canvasState.view.x,
+      canvasState.view.y,
       gridPixelWidth,
       gridPixelHeight
     );
 
     // Draw pixels with proper scaling and position
-    pixels.forEach((pixel, key) => {
+    canvasState.pixels.forEach((pixel, key) => {
       const [x, y] = key.split(',').map(Number);
-      const screenX = x * PIXEL_SIZE * view.scale + view.x;
-      const screenY = y * PIXEL_SIZE * view.scale + view.y;
+      const screenX = x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x;
+      const screenY = y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y;
       
       ctx.fillStyle = pixel.color;
       ctx.fillRect(
         screenX,
         screenY,
-        PIXEL_SIZE * view.scale,
-        PIXEL_SIZE * view.scale
+        PIXEL_SIZE * canvasState.view.scale,
+        PIXEL_SIZE * canvasState.view.scale
       );
     });
 
     // Draw preview pixel if valid position
-    if (previewPixel.x !== -1 && previewPixel.y !== -1 && !isDragging) {
-      const screenX = previewPixel.x * PIXEL_SIZE * view.scale + view.x;
-      const screenY = previewPixel.y * PIXEL_SIZE * view.scale + view.y;
+    if (interactionState.previewPixel.x !== -1 && interactionState.previewPixel.y !== -1 && !interactionState.isDragging) {
+      const screenX = interactionState.previewPixel.x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x;
+      const screenY = interactionState.previewPixel.y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y;
       
       ctx.fillStyle = selectedColor + '80'; // 50% opacity
       ctx.fillRect(
         screenX,
         screenY,
-        PIXEL_SIZE * view.scale,
-        PIXEL_SIZE * view.scale
+        PIXEL_SIZE * canvasState.view.scale,
+        PIXEL_SIZE * canvasState.view.scale
       );
     }
 
     // Draw grid when zoomed in
-    if (view.scale > 4) {
+    if (canvasState.view.scale > 4) {
       ctx.strokeStyle = '#CCCCCC';
       ctx.lineWidth = 0.5;
       
       for (let x = 0; x <= GRID_SIZE; x++) {
-        const screenX = x * PIXEL_SIZE * view.scale + view.x;
+        const screenX = x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x;
         ctx.beginPath();
-        ctx.moveTo(screenX, view.y);
-        ctx.lineTo(screenX, GRID_SIZE * PIXEL_SIZE * view.scale + view.y);
+        ctx.moveTo(screenX, canvasState.view.y);
+        ctx.lineTo(screenX, GRID_SIZE * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y);
         ctx.stroke();
       }
 
       for (let y = 0; y <= GRID_SIZE; y++) {
-        const screenY = y * PIXEL_SIZE * view.scale + view.y;
+        const screenY = y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y;
         ctx.beginPath();
-        ctx.moveTo(view.x, screenY);
-        ctx.lineTo(GRID_SIZE * PIXEL_SIZE * view.scale + view.x, screenY);
+        ctx.moveTo(canvasState.view.x, screenY);
+        ctx.lineTo(GRID_SIZE * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x, screenY);
         ctx.stroke();
       }
     }
@@ -1231,12 +1334,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     ctx.strokeStyle = '#666666';
     ctx.lineWidth = 2;
     ctx.strokeRect(
-      view.x,
-      view.y,
+      canvasState.view.x,
+      canvasState.view.y,
       gridPixelWidth,
       gridPixelHeight
     );
-  }, [pixels, isLoading, view, PIXEL_SIZE]);
+  }, [canvasState.pixels, canvasState.view, selectedColor, interactionState.previewPixel, interactionState.isDragging, PIXEL_SIZE]);
 
   // Add admin handlers
   const handleBanWallet = async (wallet: string, reason?: string) => {
@@ -1285,12 +1388,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
-    const x = Math.floor((e.clientX - rect.left - view.x) / (PIXEL_SIZE * view.scale));
-    const y = Math.floor((e.clientY - rect.top - view.y) / (PIXEL_SIZE * view.scale));
+    const x = Math.floor((e.clientX - rect.left - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
+    const y = Math.floor((e.clientY - rect.top - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
     
     setSelectionStart({ x, y });
     setSelectionEnd({ x, y });
-  }, [view, isSelectionMode, PIXEL_SIZE]);
+  }, [canvasState.view, isSelectionMode, PIXEL_SIZE]);
 
   const handleSelectionMove = useCallback((e: MouseEvent) => {
     if (!isSelectionMode || !selectionStart) return;
@@ -1298,11 +1401,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
-    const x = Math.floor((e.clientX - rect.left - view.x) / (PIXEL_SIZE * view.scale));
-    const y = Math.floor((e.clientY - rect.top - view.y) / (PIXEL_SIZE * view.scale));
+    const x = Math.floor((e.clientX - rect.left - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
+    const y = Math.floor((e.clientY - rect.top - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
     
     setSelectionEnd({ x, y });
-  }, [view, isSelectionMode, selectionStart, PIXEL_SIZE]);
+  }, [canvasState.view, isSelectionMode, selectionStart, PIXEL_SIZE]);
 
   const handleSelectionEnd = useCallback(async () => {
     if (!selectionStart || !selectionEnd) return;
@@ -1356,7 +1459,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   useEffect(() => {
     if (hoverData) {
       const key = `${hoverData.x},${hoverData.y}`;
-      const freshPixelData = pixels.get(key);
+      const freshPixelData = canvasState.pixels.get(key);
       if (freshPixelData) {
         setHoverData(prev => ({
           ...prev!,
@@ -1364,7 +1467,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         }));
       }
     }
-  }, [pixels, hoverData?.x, hoverData?.y]);
+  }, [canvasState.pixels, hoverData?.x, hoverData?.y]);
 
   // For Pusher updates, only log significant state changes
   const handlePusherUpdate = useCallback((data: any) => {
@@ -1381,7 +1484,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const handlePixelPlacement = async (x: number, y: number, color: string) => {
     try {
       console.log('🎨 Starting pixel placement:', { x, y, color });
-      const previousPixel = pixels.get(`${x},${y}`);
+      const previousPixel = canvasState.pixels.get(`${x},${y}`);
       console.log('🎨 Previous pixel state:', previousPixel);
 
       // Make API request before updating local state
@@ -1407,10 +1510,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       // Only update local state if API call succeeds
       console.log('🎨 Placement succeeded, updating state');
       const data = await response.json();
-      setPixels(prev => {
-        const newPixels = new Map(prev);
+      setCanvasState(prev => {
+        const newPixels = new Map(prev.pixels);
         newPixels.set(`${x},${y}`, data.pixel);
-        return newPixels;
+        return {
+          ...prev,
+          pixels: newPixels
+        };
       });
     } catch (error) {
       console.error('Failed to place pixel:', error);
@@ -1460,6 +1566,20 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     return () => clearInterval(interval);
   }, [nextPlacementTime]);
 
+  // Add this effect to initialize from localStorage
+  useEffect(() => {
+    const storedTime = localStorage.getItem('nextPlacementTime');
+    if (storedTime) {
+      const timeMs = parseInt(storedTime);
+      // Only restore if the time hasn't passed yet
+      if (timeMs > Date.now()) {
+        setNextPlacementTime(timeMs);
+      } else {
+        localStorage.removeItem('nextPlacementTime');
+      }
+    }
+  }, []);
+
   // Add this near the top of your file with other helper functions
   const formatBillboardAmount = (amount: number): string => {
     if (amount >= 1_000_000_000) return `${(amount / 1_000_000_000).toFixed(2)}B`;
@@ -1502,8 +1622,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             farcaster_username: prev?.farcaster_username ?? null,
             farcaster_pfp: prev?.farcaster_pfp ?? null,
             token_balance: Number(data.balance),
-            ...(prev?.last_active && { last_active: prev.last_active }),
-            ...(prev?.updated_at && { updated_at: prev.updated_at })
+            last_active: prev?.last_active,
+            updated_at: prev?.updated_at
           }));
         }
       } catch (error) {
@@ -1513,6 +1633,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     fetchBalance();
   }, [address]);
+
+  // Add effect to clear preview when color changes
+  useEffect(() => {
+    setInteractionState(prev => ({
+      ...prev,
+      previewPixel: { x: -1, y: -1 }
+    }));
+  }, [selectedColor]);
 
   return (
     <div 
@@ -1563,7 +1691,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         onContextMenu={(e) => e.preventDefault()}
         className="w-full h-full touch-none"
         style={{
-          cursor: isDragging ? 'grabbing' : 'default',
+          cursor: interactionState.isDragging ? 'grabbing' : 'default',
           imageRendering: 'pixelated',
           touchAction: 'none'
         }}
@@ -1585,8 +1713,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             style={{
               left: hoverData.screenX,
               top: hoverData.screenY,
-              width: `${(PIXEL_SIZE * view.scale) + 100}px`,
-              height: `${PIXEL_SIZE * view.scale}px`,
+              width: `${(PIXEL_SIZE * canvasState.view.scale) + 100}px`,
+              height: `${PIXEL_SIZE * canvasState.view.scale}px`,
               zIndex: 49,
               pointerEvents: 'none'
             }}
@@ -1601,7 +1729,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           <div 
             className="absolute bg-neutral-900/90 rounded px-2 py-1 text-xs border border-neutral-700"
             style={{
-              left: hoverData.screenX + (PIXEL_SIZE * view.scale),
+              left: hoverData.screenX + (PIXEL_SIZE * canvasState.view.scale),
               top: hoverData.screenY,
               fontFamily: 'var(--font-mono)',
               zIndex: 50,
@@ -1673,35 +1801,19 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           </div>
         </>
       )}
-      {!isLoading && (
-        <div className="absolute bottom-2 right-2">
-          <Minimap
-            canvasSize={GRID_SIZE}
-            viewportSize={{
-              width: containerRef.current?.offsetWidth || 0 / (PIXEL_SIZE * view.scale),
-              height: containerRef.current?.offsetHeight || 0 / (PIXEL_SIZE * view.scale)
-            }}
-            viewPosition={{
-              x: -view.x / (PIXEL_SIZE * view.scale),
-              y: -view.y / (PIXEL_SIZE * view.scale)
-            }}
-            pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
-          />
-        </div>
-      )}
-      {!isSmallScreen && windowSize.width > 0 && (
+      {!canvasState.isLoading && !isSmallScreen && windowSize.width > 0 && (
         <div className="absolute bottom-4 right-4 z-50">
           <Minimap
             canvasSize={GRID_SIZE}
             viewportSize={{
-              width: canvasSize / (PIXEL_SIZE * view.scale),
-              height: canvasSize / (PIXEL_SIZE * view.scale)
+              width: canvasSize / (PIXEL_SIZE * canvasState.view.scale),
+              height: canvasSize / (PIXEL_SIZE * canvasState.view.scale)
             }}
             viewPosition={{
-              x: -view.x / (PIXEL_SIZE * view.scale),
-              y: -view.y / (PIXEL_SIZE * view.scale)
+              x: -canvasState.view.x / (PIXEL_SIZE * canvasState.view.scale),
+              y: -canvasState.view.y / (PIXEL_SIZE * canvasState.view.scale)
             }}
-            pixels={new Map([...pixels].map(([key, pixel]) => [key, pixel.color]))}
+            pixels={new Map([...canvasState.pixels].map(([key, pixel]) => [key, pixel.color]))}
           />
         </div>
       )}

@@ -16,6 +16,10 @@ class PusherManager {
       pusherClient.unsubscribe('canvas');
     }
     
+    // Force disconnect and reconnect of the pusher client
+    pusherClient.disconnect();
+    pusherClient.connect();
+    
     this.channel = pusherClient.subscribe('canvas');
     
     this.channel.bind('pusher:subscription_succeeded', () => {

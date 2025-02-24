@@ -16,6 +16,30 @@ export const revalidate = 30; // 30 seconds instead of 5
 
 const isDev = process.env.NODE_ENV === 'development';
 
+const GRID_SIZE = 400; // Match client-side GRID_SIZE
+const VALID_COLORS = [
+  '#000000', // Black
+  '#ff4500', // Red
+  '#be0039', // Dark Red
+  '#ff3881', // Pink
+  '#ff99aa', // Light Pink
+  '#ffa800', // Orange
+  '#ffd635', // Yellow
+  '#fff8b8', // Cream
+  '#00cc78', // Green
+  '#7eed56', // Light Green
+  '#00ccc0', // Teal
+  '#3690ea', // Blue
+  '#0052FF', // Coinbase Blue
+  '#51e9f4', // Light Blue
+  '#493ac1', // Purple
+  '#811e9f', // Deep Purple
+  '#b44ac0', // Magenta
+  '#6d482f', // Brown
+  '#515252', // Dark Gray
+  '#ffffff'  // White
+];
+
 // Get canvas state
 export async function GET(request: Request) {
   try {
@@ -248,6 +272,21 @@ export async function POST(request: Request) {
 
     const { x, y, color } = await request.json();
 
+    // Validate coordinates
+    if (!Number.isInteger(x) || !Number.isInteger(y) || 
+        x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) {
+      return NextResponse.json({ 
+        error: 'Invalid coordinates' 
+      }, { status: 400 });
+    }
+
+    // Validate color
+    if (!VALID_COLORS.includes(color)) {
+      return NextResponse.json({ 
+        error: 'Invalid color' 
+      }, { status: 400 });
+    }
+
     // Get existing pixel data
     const existingPixel = await redis.hget('canvas:pixels', `${x},${y}`);
     const existingPixelData = existingPixel ? 
@@ -302,10 +341,16 @@ export async function POST(request: Request) {
     // Calculate top users from history
     const topUsers = calculateTopUsers(pixelsArray);
 
+    console.log('📤 Sending Pusher event with topUsers:', topUsers.length);
+
     // Send both pixel and topUsers data in Pusher event
     await pusher.trigger('canvas', 'pixel-placed', { 
       pixel: pixelData,
       topUsers 
+    }).then(() => {
+      console.log('✅ Pusher event sent successfully');
+    }).catch((error) => {
+      console.error('❌ Failed to send Pusher event:', error);
     });
 
     return NextResponse.json({ success: true, pixel: pixelData });

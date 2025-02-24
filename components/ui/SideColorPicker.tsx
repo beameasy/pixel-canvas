@@ -20,6 +20,7 @@ const COLORS = [
   { hex: '#7eed56', name: 'Light Green' },
   { hex: '#00ccc0', name: 'Teal' },
   { hex: '#3690ea', name: 'Blue' },
+  { hex: '#0052FF', name: 'Coinbase Blue' },
   { hex: '#51e9f4', name: 'Light Blue' },
   { hex: '#493ac1', name: 'Purple' },
   { hex: '#811e9f', name: 'Deep Purple' },
