@@ -11,7 +11,19 @@ interface LeaderboardEntry {
   pixels_24h: number;
   pixels_1h: number;
   favorite_color: string;
+  token_balance?: number;
 }
+
+const formatBalance = (balance: number): string => {
+  if (balance >= 1000000000) {
+    return (balance / 1000000000).toFixed(1) + 'B';
+  } else if (balance >= 1000000) {
+    return (balance / 1000000).toFixed(1) + 'M';
+  } else if (balance >= 1000) {
+    return (balance / 1000).toFixed(1) + 'K';
+  }
+  return balance.toString();
+};
 
 export default function Leaderboard() {
   const [users, setUsers] = useState<LeaderboardEntry[]>([]);
@@ -99,6 +111,10 @@ export default function Leaderboard() {
                     onClick={() => handleSort('favorite_color')}>
                   Favorite Color
                 </th>
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200 hidden md:table-cell"
+                    onClick={() => handleSort('token_balance')}>
+                  $BILLBOARD
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -155,6 +171,9 @@ export default function Leaderboard() {
                         />
                         <span className="font-mono text-slate-300">{user.favorite_color}</span>
                       </div>
+                    </td>
+                    <td className="p-4 font-mono text-amber-400 hidden md:table-cell">
+                      {user.token_balance ? formatBalance(user.token_balance) : '0'}
                     </td>
                   </tr>
                 ))}

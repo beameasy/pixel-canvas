@@ -61,14 +61,16 @@ export async function GET() {
       if (stats) stats.pixels_1h++;
     });
 
-    // Add Farcaster data
+    // Add Farcaster data and token balances
     if (farcasterData) {
       Object.entries(farcasterData).forEach(([wallet_address, data]) => {
-        const { farcaster_username: username, farcaster_pfp: pfp_url } = typeof data === 'string' ? JSON.parse(data) : data;
+        const userData = typeof data === 'string' ? JSON.parse(data) : data;
+        const { farcaster_username: username, farcaster_pfp: pfp_url, token_balance } = userData;
         const stats = userStats.get(wallet_address);
         if (stats) {
           stats.farcaster_username = username;
           stats.farcaster_pfp = pfp_url;
+          stats.token_balance = Number(token_balance) || 0;  // Add token balance from user data
         }
       });
     }
@@ -82,7 +84,8 @@ export async function GET() {
         pixels_24h: stats.pixels_24h || 0,
         pixels_1h: stats.pixels_1h || 0,
         favorite_color: Array.from(stats.colors.entries() as [string, number][])
-          .sort((a, b) => b[1] - a[1])[0]?.[0] || '#000000'
+          .sort((a, b) => b[1] - a[1])[0]?.[0] || '#000000',
+        token_balance: stats.token_balance || 0  // Include in output
       }))
       .filter(user => user.total_pixels > 0); // Only show users who have placed pixels
 

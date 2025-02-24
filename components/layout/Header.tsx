@@ -15,6 +15,7 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
   const [showDisconnect, setShowDisconnect] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showCopied, setShowCopied] = useState(false);
 
   const handleLogin = async () => {
     try {
@@ -67,21 +68,29 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
               
               <div className="hidden group-hover:block absolute left-0 top-full pt-2 w-60 z-[102]">
                 <div className="bg-slate-800 border border-slate-700 rounded-md shadow-lg py-2">
-                  <a 
-                    href="https://basescan.org/address/0x0aB96f7A85f8480c0220296C3332488ce38D9818"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block px-4 py-2 text-sm font-mono text-blue-400 hover:bg-slate-700"
+                  <div 
+                    className="block px-4 py-2 text-sm font-mono text-blue-400 hover:bg-slate-700 flex items-center justify-between cursor-pointer relative"
+                    onClick={() => {
+                      navigator.clipboard.writeText('0x0aB96f7A85f8480c0220296C3332488ce38D9818');
+                      setShowCopied(true);
+                      setTimeout(() => setShowCopied(false), 2000);
+                    }}
                   >
-                    Contract Address
-                  </a>
+                    <span className="text-sm">{showCopied ? 'Copied!' : 'Contract Address'}</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </div>
                   <a 
                     href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="block px-4 py-2 text-sm font-mono text-emerald-400 hover:bg-slate-700"
+                    className="block px-4 py-2 text-sm font-mono text-emerald-400 hover:bg-slate-700 flex items-center justify-between"
                   >
-                    Trade $BILLBOARD on Clank.fun
+                    <span>Trade $BILLBOARD on Clank.fun</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
                   </a>
                 </div>
               </div>
