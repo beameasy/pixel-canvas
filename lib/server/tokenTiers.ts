@@ -12,14 +12,26 @@ export function formatBillboardAmount(amount: number): string {
 
 // Cache token balances for 5 minutes
 async function getTokenBalance(walletAddress: string): Promise<number> {
+  console.log(`Getting token balance for wallet: ${walletAddress}`);
+  
+  // Make sure we're dealing with a wallet address and not a number
+  if (!walletAddress.startsWith('0x')) {
+    console.error(`Invalid wallet address passed: ${walletAddress}`);
+    return 0;
+  }
+
   const cacheKey = `balance:${walletAddress}`;
   const cached = await redis.get(cacheKey);
   
   if (cached && typeof cached === 'string') {
-    return parseFloat(cached);
+    const parsedBalance = parseFloat(cached);
+    console.log(`Using cached balance for ${walletAddress}: ${parsedBalance}`);
+    return parsedBalance;
   }
 
+  console.log(`Fetching on-chain balance for: ${walletAddress}`);
   const balance = Number(await getBillboardBalance(walletAddress));
+  console.log(`On-chain balance for ${walletAddress}: ${balance}`);
   
   await redis.set(cacheKey, balance.toString(), {
     ex: 5 * 60 // 5 minutes
@@ -31,13 +43,34 @@ async function getTokenBalance(walletAddress: string): Promise<number> {
 export async function getUserTier(balanceOrAddress: number | string): Promise<TokenTier> {
   let balance: number;
   
-  if (typeof balanceOrAddress === 'string') {
+  if (typeof balanceOrAddress === 'string' && balanceOrAddress.startsWith('0x')) {
+    // This is a wallet address, get balance from chain or cache
     balance = await getTokenBalance(balanceOrAddress);
+    console.log(`Resolved balance for ${balanceOrAddress}: ${balance}`);
   } else {
-    balance = balanceOrAddress;
+    // This is already a balance
+    balance = Number(balanceOrAddress);
+    console.log(`Direct balance provided: ${balance}`);
   }
 
-  return TIERS.find(tier => balance >= tier.minTokens) || DEFAULT_TIER;
+  // Force conversion to Number to ensure proper comparison
+  balance = Number(balance);
+  
+  // Debug logging to diagnose the issue
+  console.log(`Debug getUserTier: balance=${balance}, type=${typeof balance}`);
+  console.log(`Tier thresholds: Diamond=${TIERS[0].minTokens}, Platinum=${TIERS[1].minTokens}`);
+  console.log(`Comparison result: Diamond?=${balance >= TIERS[0].minTokens}, Platinum?=${balance >= TIERS[1].minTokens}`);
+
+  // Iterate through tiers from highest to lowest
+  for (const tier of TIERS) {
+    if (balance >= tier.minTokens) {
+      console.log(`Selected tier: ${tier.name} with cooldown ${tier.cooldownSeconds}s`);
+      return tier;
+    }
+  }
+
+  console.log(`No tier matched, using default: ${DEFAULT_TIER.name}`);
+  return DEFAULT_TIER;
 }
 
 export async function canPlacePixel(walletAddress: string): Promise<boolean> {

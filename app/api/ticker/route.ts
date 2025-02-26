@@ -4,7 +4,7 @@ import { redis } from '@/lib/server/redis';
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const pixels = await redis.hgetall('canvas:pixels');
     const pixelsArray = Object.values(pixels || {}).map(p => 

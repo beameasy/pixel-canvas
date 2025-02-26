@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { pusherManager } from '@/lib/client/pusherManager';
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
+import { usePrivy } from '@privy-io/react-auth';
 
 interface PixelPlacement {
   id: string;
@@ -79,6 +80,7 @@ function PlacementMessage({ placement }: { placement: PixelPlacement }) {
 }
 
 export default function PixelFeed() {
+  const { getAccessToken } = usePrivy();
   const [placements, setPlacements] = useState<PixelPlacement[]>([]);
   const [isMobile, setIsMobile] = useState(false);
 
@@ -108,10 +110,12 @@ export default function PixelFeed() {
     const fetchInitialData = async () => {
       if (!mounted) return;
       try {
+        const token = await getAccessToken();
         const response = await fetch('/api/pixels/history?limit=6', {
           cache: 'no-cache',
           headers: {
-            'Cache-Control': 'no-cache'
+            'Cache-Control': 'no-cache',
+            'x-privy-token': token || ''
           }
         });
         
@@ -146,7 +150,7 @@ export default function PixelFeed() {
       mounted = false;
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
     };
-  }, []);
+  }, [getAccessToken]);
 
   return (
     <div className="w-full max-w-[600px] mx-auto font-mono text-[10px] sm:text-xs flex flex-col items-center h-12">

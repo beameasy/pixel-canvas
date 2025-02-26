@@ -3,7 +3,7 @@
 import Canvas from '@/components/canvas/CanvasV2';
 import PixelLogo from '@/components/ui/PixelLogo';
 import Controls from '@/components/layout/Controls';
-import { usePrivy } from '@privy-io/react-auth';
+import { usePrivy, type User as PrivyUser } from '@privy-io/react-auth';
 import { useState, useRef, useEffect } from 'react';
 import { AdminTools } from '@/components/admin/AdminTools';
 import PixelFeed from '@/components/PixelFeed';
@@ -11,7 +11,7 @@ import { CanvasRef } from '@/components/canvas/CanvasV2';
 import { pusherManager } from '@/lib/client/pusherManager';
 
 export default function Home() {
-  const { authenticated, user } = usePrivy();
+  const { authenticated, user, getAccessToken } = usePrivy();
   const [selectedColor, setSelectedColor] = useState('#000000');
   const [showError, setShowError] = useState(false);
   const [mousePos, setMousePos] = useState({ x: -1, y: -1 });
@@ -78,11 +78,38 @@ export default function Home() {
 
   // Add effect to handle wallet changes
   useEffect(() => {
-    if (authenticated && user?.wallet?.address) {
-      console.log('🔄 Wallet changed, reconnecting Pusher');
-      pusherManager.reconnect();
-    }
-  }, [authenticated, user?.wallet?.address]);
+    const storeUserData = async () => {
+      if (authenticated && user?.wallet?.address) {
+        console.log('🔄 Wallet connected:', user.wallet.address);
+        
+        try {
+          // Store user data with Privy ID
+          const token = await getAccessToken();
+          if (!token) return;  // Early return if no token
+
+          const response = await fetch('/api/users/check-profile', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-wallet-address': user.wallet.address,
+              'x-privy-token': token
+            }
+          });
+
+          if (!response.ok) {
+            throw new Error('Failed to store user data');
+          }
+
+          console.log('✅ Stored user data with Privy ID');
+          pusherManager.reconnect();
+        } catch (error) {
+          console.error('❌ Failed to store user data:', error);
+        }
+      }
+    };
+
+    storeUserData();
+  }, [authenticated, user?.wallet?.address, getAccessToken]);
 
   return (
     <div className="min-h-screen bg-slate-800 overflow-y-auto">

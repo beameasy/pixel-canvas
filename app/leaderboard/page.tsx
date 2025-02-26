@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { pusherManager } from '@/lib/client/pusherManager';
+import { usePrivy } from '@privy-io/react-auth';
 
 interface LeaderboardEntry {
   wallet_address: string;
@@ -26,6 +27,7 @@ const formatBalance = (balance: number): string => {
 };
 
 export default function Leaderboard() {
+  const { getAccessToken } = usePrivy();
   const [users, setUsers] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [sortField, setSortField] = useState<keyof LeaderboardEntry>('total_pixels');
@@ -38,10 +40,12 @@ export default function Leaderboard() {
 
     const fetchLeaderboard = async () => {
       try {
+        const token = await getAccessToken();
         const response = await fetch('/api/leaderboard', {
           headers: {
             'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
+            'Pragma': 'no-cache',
+            'x-privy-token': token || ''
           }
         });
         const data = await response.json();
@@ -66,7 +70,7 @@ export default function Leaderboard() {
     return () => {
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
     };
-  }, []);
+  }, [getAccessToken]);
 
   const handleSort = (field: keyof LeaderboardEntry) => {
     if (field === sortField) {

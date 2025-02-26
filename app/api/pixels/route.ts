@@ -41,33 +41,24 @@ const VALID_COLORS = [
 ];
 
 // Get canvas state
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    const session = await authenticateUser(request);
+    const pixels = await redis.hgetall('canvas:pixels');
     
-    const exists = await redis.exists('canvas:pixels');
+    // Ensure we return an empty array if no pixels found
+    if (!pixels) return NextResponse.json([]);
     
-    const pixels = exists ? await redis.hgetall('canvas:pixels') : {};
-    
-    const pixelsArray = Object.entries(pixels || {}).map(([key, value]) => {
-      const [x, y] = key.split(',');
-      const pixelData = typeof value === 'string' ? JSON.parse(value) : value;
-      return {
-        ...pixelData,
-        x: parseInt(x),
-        y: parseInt(y)
-      };
+    // Convert hash to array format
+    const pixelsArray = Object.entries(pixels).map(([key, value]) => {
+      const [x, y] = key.split(',').map(Number);
+      const data = typeof value === 'string' ? JSON.parse(value) : value;
+      return { x, y, ...data };
     });
 
-    // Increase cache times
-    return NextResponse.json(pixelsArray, {
-      headers: { 
-        'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60'
-      }
-    });
+    return NextResponse.json(pixelsArray);
   } catch (error) {
-    console.error('❌ Error fetching pixels:', error);
-    return NextResponse.json([], { status: 200 });
+    console.error('Error fetching pixels:', error);
+    return NextResponse.json([]);
   }
 }
 
@@ -132,16 +123,23 @@ async function getTokenBalance(walletAddress: string, session: any): Promise<num
       if (isDev) {
         console.log('🔵 Found cached user data:', userData);
       }
-      return (typeof userData === 'string' ? JSON.parse(userData) : userData).token_balance || 0;
+      const parsedUserData = typeof userData === 'string' ? JSON.parse(userData) : userData;
+      // Keep existing Privy ID if present
+      if (session?.privy_id && !parsedUserData.privy_id) {
+        await redis.hset('users', {
+          [walletAddress]: JSON.stringify({
+            ...parsedUserData,
+            privy_id: session.privy_id,
+            updated_at: new Date().toISOString()
+          })
+        });
+      }
+      return parsedUserData.token_balance || 0;
     }
   
     // If no cached data, fetch from chain and update user record
     const balance = Number(await getBillboardBalance(walletAddress));
     const farcasterUser = await getFarcasterUser(walletAddress);
-    
-    if (isDev) {
-      console.log('🔵 Raw Farcaster user data:', farcasterUser);
-    }
     
     // Match the FarcasterUser interface field names
     const userDataToStore = {
@@ -150,7 +148,7 @@ async function getTokenBalance(walletAddress: string, session: any): Promise<num
       farcaster_username: farcasterUser?.farcaster_username || null,
       farcaster_pfp: farcasterUser?.farcaster_pfp || null,
       updated_at: new Date().toISOString(),
-      privy_id: session?.privy_id || null
+      privy_id: session?.privy_id // Add Privy ID from session
     };
 
     if (isDev) {
@@ -260,6 +258,8 @@ export async function POST(request: Request) {
 
     // Regular tier-based cooldown check
     const tier = await getUserTier(balance);
+    console.log(`🔵 User ${walletAddress} with balance ${balance} has tier: ${tier.name} with cooldown: ${tier.cooldownSeconds}s`);
+
     const lastPlaced = (await redis.hget('pixel:cooldowns', walletAddress) || '0').toString();
     if (lastPlaced) {
       const timeSinceLastPlaced = Date.now() - parseInt(lastPlaced);
@@ -343,10 +343,12 @@ export async function POST(request: Request) {
 
     console.log('📤 Sending Pusher event with topUsers:', topUsers.length);
 
-    // Send both pixel and topUsers data in Pusher event
+    // Calculate activity data and include it in Pusher event
+    const activitySpikes = await calculateActivitySpikes();
     await pusher.trigger('canvas', 'pixel-placed', { 
       pixel: pixelData,
-      topUsers 
+      topUsers: topUsers,
+      activitySpikes: activitySpikes
     }).then(() => {
       console.log('✅ Pusher event sent successfully');
     }).catch((error) => {
@@ -395,4 +397,60 @@ async function calculateLockCost(duration: number): Promise<number> {
   const baseUsdCost = 0.10; // 10 cents per hour
   const usdCost = baseUsdCost * hours * (1 + hours/4); // Quadratic increase
   return getTokensNeededForUsdAmount(usdCost);
+}
+
+// Add this function to calculate activity spikes
+async function calculateActivitySpikes() {
+  try {
+    // Define our activity windows
+    const windows = [
+      { minutes: 1, threshold: 10, intensity: 1 },
+      { minutes: 3, threshold: 30, intensity: 2 },
+      { minutes: 5, threshold: 60, intensity: 3 },
+      { minutes: 10, threshold: 100, intensity: 4 },
+      { minutes: 15, threshold: 200, intensity: 5 }
+    ];
+    
+    const now = Date.now();
+    const fifteenMinsAgo = now - (15 * 60 * 1000);
+    
+    // Get pixel history
+    const pixelHistory = await redis.zrange(
+      'canvas:history',
+      fifteenMinsAgo,
+      now,
+      { byScore: true }
+    );
+
+    const pixels = pixelHistory.map(p => 
+      typeof p === 'string' ? JSON.parse(p) : p
+    );
+    
+    // Calculate counts for each time window
+    const activitySpikes = windows.map(window => {
+      const windowStart = now - (window.minutes * 60 * 1000);
+      const count = pixels.filter(pixel => {
+        const pixelTime = new Date(pixel.placed_at).getTime();
+        return pixelTime >= windowStart;
+      }).length;
+      
+      if (count >= window.threshold) {
+        return {
+          count,
+          timeWindow: window.minutes,
+          intensity: window.intensity
+        };
+      }
+      return null;
+    }).filter(Boolean);
+    
+    // Sort by intensity
+    const nonNullSpikes = activitySpikes as NonNullable<typeof activitySpikes[0]>[];
+    nonNullSpikes.sort((a, b) => b.intensity - a.intensity);
+    
+    return nonNullSpikes.length > 0 ? [nonNullSpikes[0]] : [];
+  } catch (error) {
+    console.error('Error calculating activity spikes:', error);
+    return [];
+  }
 }
