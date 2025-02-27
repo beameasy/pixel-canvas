@@ -32,6 +32,11 @@ const ADMIN_ROUTES = [
   // Add other admin routes here
 ];
 
+// Define cron routes that need special secret
+const CRON_ROUTES = [
+  { path: '/api/cron/process-queue', method: 'ALL' }
+];
+
 // Define admin wallets array from environment variable
 const ADMIN_WALLETS = (process.env.ADMIN_WALLETS || '')
   .split(',')
@@ -116,6 +121,11 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     pathname.startsWith(route.path) && (route.method === method || route.method === 'ALL')
   );
   
+  // Check if route is in CRON_ROUTES
+  const isCronRoute = CRON_ROUTES.some(route => 
+    pathname.startsWith(route.path) && (route.method === method || route.method === 'ALL')
+  );
+  
   // Apply rate limiting based on route type
   if (pathname.includes('/api/pixels') && method === 'POST') {
     const passed = await checkRateLimit(ip, 'pixels');
@@ -132,6 +142,15 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     if (!passed) {
       return NextResponse.json({ error: 'Rate limit exceeded' }, { status: 429 });
     }
+  }
+  
+  // Special handling for cron routes
+  if (isCronRoute) {
+    const cronSecret = req.headers.get('x-cron-secret');
+    if (cronSecret !== process.env.CRON_SECRET) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    return res;
   }
   
   // Public routes don't need authentication

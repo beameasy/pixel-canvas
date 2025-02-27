@@ -330,8 +330,34 @@ export async function POST(request: Request) {
       // Cooldown
       redis.hset('pixel:cooldowns', {
         [walletAddress]: Date.now().toString()
-      })
+      }),
+      // After adding pixel to Redis and to the queue
+      redis.rpush('supabase:pixels:queue', JSON.stringify(pixelData))
     ]);
+
+    // Trigger queue processing if queue has enough items
+    const queueLength = await redis.llen('supabase:pixels:queue');
+    if (queueLength >= 50) { // Process in batches of 50 or more
+      // Check if processing is already active
+      const processingActive = await redis.get('queue_processing_active');
+      if (!processingActive) {
+        // Set processing flag with 5 minute expiry
+        await redis.set('queue_processing_active', '1', {ex: 300});
+        
+        // Trigger processing in background
+        if (process.env.NEXT_PUBLIC_APP_URL && process.env.CRON_SECRET) {
+          fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
+            method: 'POST',
+            headers: { 
+              'x-cron-secret': process.env.CRON_SECRET,
+              'origin': process.env.NEXT_PUBLIC_APP_URL 
+            }
+          }).catch(error => {
+            console.error('Failed to trigger queue processing:', error);
+          });
+        }
+      }
+    }
 
     // Get recent history for top users calculation - using zrange for sorted set
     const pixelHistory = await redis.zrange('canvas:history', 0, -1);

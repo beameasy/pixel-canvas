@@ -22,25 +22,25 @@ export const TIERS: TokenTier[] = [
   { 
     name: 'Gold',
     minTokens: 150_000_000,  // 150M tokens
-    cooldownSeconds: 10,    // 10 seconds cooldown (reduced from 15)
+    cooldownSeconds: 15,    // 10 seconds cooldown (reduced from 15)
     protectionTime: 12      // 12 hours protection
   },
   { 
     name: 'Silver',
     minTokens: 30_000_000,  // 30M tokens (reduced from 30M)
-    cooldownSeconds: 15,    // 15 seconds cooldown (reduced from 20)
+    cooldownSeconds: 20,    // 15 seconds cooldown (reduced from 20)
     protectionTime: 6       // 6 hours protection (increased from 3)
   },
   {
     name: 'Bronze',
     minTokens: 5_000_000,   // 5M tokens (new tier between Silver and default)
-    cooldownSeconds: 20,    // 20 seconds cooldown
-    protectionTime: 2       // 2 hours protection
+    cooldownSeconds: 25,    // 20 seconds cooldown
+    protectionTime: 0.5       // 2 hours protection
   },
   { 
     name: 'Member',
     minTokens: 0,           // Default tier (renamed from Bronze)
-    cooldownSeconds: 25,    // 25 seconds cooldown (reduced from 30)
+    cooldownSeconds: 30,    // 25 seconds cooldown (reduced from 30)
     protectionTime: 0       // No protection
   }
 ];
