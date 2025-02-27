@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 const TEST_SECRET = process.env.TEST_SECRET;
 
 export async function POST(request: Request) {
-  // Add test environment check
+  // Current check is good but ensure the TEST_SECRET is strong
   if (process.env.NODE_ENV === 'production') {
     return NextResponse.json({ error: 'Test endpoint not available in production' }, { status: 403 });
   }

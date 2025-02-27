@@ -3,32 +3,27 @@ import { NextResponse } from 'next/server';
 
 export async function GET() {
   try {
-    console.log('🎯 Fetching leaderboard data...');
-    
-    // Get current canvas state from Redis - update key name
+    // Get current canvas state from Redis
     const pixels = await redis.hgetall('canvas:pixels');
-    console.log('📊 Pixels:', { count: pixels ? Object.keys(pixels).length : 0 });
 
     if (!pixels) {
-      console.log('⚠️ No pixel data found');
-      return NextResponse.json([]);
+      return NextResponse.json([], {
+        headers: {
+          'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30'
+        }
+      });
     }
 
     const pixelHistory24h = await redis.zrange('canvas:history', Date.now() - 86400000, Date.now(), { byScore: true });
-    console.log('📊 24h history:', { count: pixelHistory24h.length });
-
     const pixelHistory1h = await redis.zrange('canvas:history', Date.now() - 3600000, Date.now(), { byScore: true });
-    console.log('📊 1h history:', { count: pixelHistory1h.length });
-
-    const farcasterData = await redis.hgetall('users');  // Changed from 'farcaster_users' to 'users'
-    console.log('📊 Users:', { count: farcasterData ? Object.keys(farcasterData).length : 0 });
+    const farcasterData = await redis.hgetall('users');
 
     const userStats = new Map();
 
     // Process current pixels
     if (pixels) {
       Object.entries(pixels).forEach(([key, value]) => {
-        const [x, y] = key.split(',');  // Change from ':' to ',' to match pixels API
+        const [x, y] = key.split(',');
         const data = typeof value === 'string' ? JSON.parse(value) : value;
         const { wallet_address, color } = data;
         
@@ -89,10 +84,18 @@ export async function GET() {
       }))
       .filter(user => user.total_pixels > 0); // Only show users who have placed pixels
 
-    console.log('📊 Final leaderboard:', { count: leaderboard.length });
-    return NextResponse.json(leaderboard);
+    return NextResponse.json(leaderboard, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30'
+      }
+    });
   } catch (error) {
-    console.error('❌ Error fetching leaderboard:', error);
-    return NextResponse.json({ error: 'Failed to fetch leaderboard' }, { status: 500 });
+    console.error('Error fetching leaderboard:', error);
+    return NextResponse.json({ error: 'Failed to fetch leaderboard' }, { 
+      status: 500,
+      headers: {
+        'Cache-Control': 'no-store'
+      }
+    });
   }
 } 

@@ -24,7 +24,7 @@ export async function GET(request: Request) {
       }
     });
   } catch (error) {
-    console.error('❌ Error fetching canvas:', error);
+    console.error('Error fetching canvas:', error);
     return NextResponse.json([]);
   }
 } 

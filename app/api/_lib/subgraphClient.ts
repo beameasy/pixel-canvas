@@ -50,7 +50,7 @@ const GET_PRICE = gql`
 
 export async function getBillboardBalance(walletAddress: string) {
     try {
-        console.log('🔍 Getting token balance from Alchemy');
+        console.log('Getting token balance from Alchemy');
         console.log('📍 Wallet:', walletAddress);
         console.log('🎯 Token:', TOKEN_ADDRESS);
         

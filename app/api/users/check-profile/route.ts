@@ -144,9 +144,18 @@ export async function POST(request: Request) {
       farcaster_pfp: parsedUserData.farcaster_pfp,
       farcaster_display_name: parsedUserData.farcaster_display_name,
       farcaster_id: parsedUserData.farcaster_id
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0'
+      }
     });
   } catch (error) {
     console.error('Failed to check profile:', error);
-    return NextResponse.json({ error: 'Server error' }, { status: 500 });
+    return NextResponse.json({ error: 'Server error' }, { 
+      status: 500,
+      headers: {
+        'Cache-Control': 'no-store'
+      }
+    });
   }
 } 

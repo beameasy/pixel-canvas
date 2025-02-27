@@ -17,7 +17,6 @@ export async function POST(request: Request) {
     const adminWallet = request.headers.get('x-wallet-address')?.toLowerCase();
     const isAdminHeader = request.headers.get('x-is-admin');
     
-    // Check both the header from middleware and directly
     if (!isAdmin(adminWallet) && isAdminHeader !== 'true') {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -34,8 +33,6 @@ export async function POST(request: Request) {
       reason: reason || null,
       active: true
     };
-
-    console.log('🚫 Storing ban data in Redis:', banData);
     
     // Store in Redis as a pending ban to be processed
     await redis.rpush('supabase:bans:queue', JSON.stringify(banData));
@@ -51,11 +48,6 @@ export async function POST(request: Request) {
         banned_by: banData.banned_by
       }));
     }
-    
-    // Verify data was stored
-    const pendingBans = await redis.lrange('supabase:bans:queue', 0, -1);
-    const bannedWallets = await redis.smembers('banned:wallets:permanent');
-    console.log('🚫 Redis state:', { pendingBans, bannedWallets });
     
     // Trigger queue processing if enabled
     if (process.env.NEXT_PUBLIC_APP_URL && process.env.CRON_SECRET) {

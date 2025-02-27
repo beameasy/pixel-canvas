@@ -40,9 +40,17 @@ export async function GET(request: Request) {
 
     const pixelHistory = await redis.zrange('canvas:history', 0, -1);
 
-    return NextResponse.json(topUsers);
+    return NextResponse.json(topUsers, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=5, stale-while-revalidate=10'
+      }
+    });
   } catch (error) {
     console.error('Error fetching ticker data:', error);
-    return NextResponse.json([]);
+    return NextResponse.json([], {
+      headers: {
+        'Cache-Control': 'no-store'
+      }
+    });
   }
 } 

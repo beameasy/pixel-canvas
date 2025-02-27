@@ -23,6 +23,10 @@ export async function GET() {
       pixels: pixelArray,
       placements: recentHistory, // Add placements for PixelFeed
       cooldownInfo: null
+    }, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=10, stale-while-revalidate=30'
+      }
     });
   } catch (error) {
     console.error('Failed to fetch pixels:', error);

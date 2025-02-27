@@ -109,12 +109,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     previewPixel: { x: -1, y: -1 }
   });
 
-  // Use refs for values that don't need to trigger re-renders
-  const metricsRef = useRef({
-    lastLoadTime: 0,
-    lastPlacement: 0,
-    lastCanvasUpdate: 0
-  });
 
   // 3. Memoize expensive calculations
   const canvasSize = useMemo(() => {
@@ -125,10 +119,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   const [currentTime, setCurrentTime] = useState(Date.now());
 
-  const [tooltipTimeout, setTooltipTimeout] = useState<NodeJS.Timeout | null>(null);
-
-  // Add debug logging
-  const [lastTouchAction, setLastTouchAction] = useState<string>('');
+  const [tooltipTimeout] = useState<NodeJS.Timeout | null>(null);
 
   // Add state for hover data
   const [hoverData, setHoverData] = useState<{
@@ -143,35 +134,15 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const rafRef = useRef<number>(0);
   const needsRender = useRef<boolean>(false);
 
-  // Add a ref to track recent placement
-  const lastPlacementRef = useRef<number>(0);
-
   const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
   const [selectionEnd, setSelectionEnd] = useState<{ x: number; y: number } | null>(null);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
-  const [isAdminMode, setIsAdminMode] = useState(false);
-
-  // Modify the tooltip logging to only log when the pixel data actually changes
-  const [lastTooltipData, setLastTooltipData] = useState<string>('');
 
   // Add a ref for the overlay canvas
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Add this to your state declarations
-  const [pendingPixels, setPendingPixels] = useState<Map<string, PixelData>>(new Map());
-
   // Add connection state tracking
   const [pusherConnected, setPusherConnected] = useState(false);
-
-  // Add state for cooldown if needed
-  const [isInCooldown, setIsInCooldown] = useState(false);
-
-  // Add new states and refs
-  const [isCanvasLoading, setIsCanvasLoading] = useState(true);
-  const [lastCanvasUpdate, setLastCanvasUpdate] = useState(0);
-
-  // Add these near your other state declarations
-  const CACHE_DURATION = 60000; // Cache balances for 1 minute
 
   // Add a ref to track the last load time
   const lastLoadRef = useRef<number>(0);
@@ -307,19 +278,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const loadCanvasState = useCallback(async (force = false) => {
     const now = Date.now();
     if (!force && now - lastLoadRef.current < LOAD_COOLDOWN) {
-      console.log('🔵 Skipping load - too soon');
       return;
     }
     
-    console.log('🔵 Loading canvas state... Triggered by:', new Error().stack);
     lastLoadRef.current = now;
     
     try {
-      console.log('🔵 Loading canvas state...');
-      
       const response = await fetch('/api/canvas');
       const data = await response.json();
-      console.log('🔵 Canvas data loaded:', { pixelCount: data.length });
       
       setCanvasState(prev => ({
         ...prev,
@@ -449,7 +415,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
         const data = await response.json();
         if (response.ok && data.balance !== undefined) {
-          // Only update if balance has changed
           setUserProfile(prev => {
             if (prev?.token_balance === Number(data.balance)) return prev;
             return {
@@ -491,23 +456,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     try {
       const response = await fetch('/api/pixels');
       
-      // Log response headers to verify caching
-      console.log('🔵 Canvas response:', {
-        status: response.status,
-        cached: response.headers.get('x-vercel-cache'),
-        cacheControl: response.headers.get('cache-control')
-      });
-
       if (!response.ok) {
         throw new Error('Failed to load canvas state');
       }
 
       const data = await response.json();
-      console.log('🔵 Canvas data loaded:', {
-        count: data.length,
-        sample: data.slice(0, 1)
-      });
-
+      
       setCanvasState(prev => ({
         ...prev,
         pixels: new Map(data.map((pixel: any) => 
@@ -854,11 +808,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     needsRender.current = true;
   }, [canvasState.view, canvasState.pixels]);
 
-  // Add this to debug what data we have available
-  useEffect(() => {
-    console.log('Privy user:', user);
-  }, [user]);
-
   // Add a function to fetch balance
   const fetchBalance = useCallback(async () => {
     if (!address || !user?.id) return;
@@ -921,7 +870,37 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Update handlePlacePixel to fetch balance after placement
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
-      // Optimistically draw the new pixel immediately
+      // Store the key for this pixel
+      const key = `${x},${y}`;
+      
+      // Store previous pixel state to revert if needed
+      const previousPixel = canvasState.pixels.get(key);
+      
+      // Create optimistic pixel data
+      const optimisticPixel: PixelData = {
+        x,
+        y,
+        color,
+        wallet_address: address || undefined,
+        farcaster_username: farcasterUser?.username || null,
+        farcaster_pfp: farcasterUser?.pfpUrl || null,
+        placed_at: new Date().toISOString(),
+        token_balance: userProfile?.token_balance || 0,
+        locked_until: null,
+        canOverwrite: false
+      };
+      
+      // Optimistically update state
+      setCanvasState(prev => {
+        const newPixels = new Map(prev.pixels);
+        newPixels.set(key, optimisticPixel);
+        return {
+          ...prev,
+          pixels: newPixels
+        };
+      });
+      
+      // Also do the visual update
       drawSinglePixel(x, y, color);
       
       // Queue API request
@@ -936,20 +915,40 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       });
 
       if (!response.ok) {
+        // Revert to previous pixel state on error
+        setCanvasState(prev => {
+          const newPixels = new Map(prev.pixels);
+          if (previousPixel) {
+            newPixels.set(key, previousPixel);
+          } else {
+            newPixels.delete(key);
+          }
+          return {
+            ...prev,
+            pixels: newPixels
+          };
+        });
+        
+        // Redraw the previous pixel if it existed
+        if (previousPixel) {
+          drawSinglePixel(x, y, previousPixel.color);
+        }
+        
         // Clear preview pixel on error
         setInteractionState(prev => ({
           ...prev,
           previewPixel: { x: -1, y: -1 }
         }));
+        
         const error = await response.json();
         throw new Error(error.error || 'Failed to place pixel');
       }
 
-      // Update state without triggering full re-render
+      // Update state with server data
       const data = await response.json();
       setCanvasState(prev => {
         const newPixels = new Map(prev.pixels);
-        newPixels.set(`${x},${y}`, data.pixel);
+        newPixels.set(key, data.pixel);
         return {
           ...prev,
           pixels: newPixels

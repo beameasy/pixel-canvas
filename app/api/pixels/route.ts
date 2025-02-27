@@ -46,7 +46,11 @@ export async function GET() {
     const pixels = await redis.hgetall('canvas:pixels');
     
     // Ensure we return an empty array if no pixels found
-    if (!pixels) return NextResponse.json([]);
+    if (!pixels) return NextResponse.json([], {
+      headers: {
+        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30'
+      }
+    });
     
     // Convert hash to array format
     const pixelsArray = Object.entries(pixels).map(([key, value]) => {
@@ -55,10 +59,18 @@ export async function GET() {
       return { x, y, ...data };
     });
 
-    return NextResponse.json(pixelsArray);
+    return NextResponse.json(pixelsArray, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30'
+      }
+    });
   } catch (error) {
     console.error('Error fetching pixels:', error);
-    return NextResponse.json([]);
+    return NextResponse.json([], {
+      headers: {
+        'Cache-Control': 'no-store'
+      }
+    });
   }
 }
 
@@ -120,9 +132,6 @@ async function getTokenBalance(walletAddress: string, session: any): Promise<num
   try {
     const userData = await redis.hget('users', walletAddress);
     if (userData) {
-      if (isDev) {
-        console.log('🔵 Found cached user data:', userData);
-      }
       const parsedUserData = typeof userData === 'string' ? JSON.parse(userData) : userData;
       // Keep existing Privy ID if present
       if (session?.privy_id && !parsedUserData.privy_id) {
@@ -141,19 +150,14 @@ async function getTokenBalance(walletAddress: string, session: any): Promise<num
     const balance = Number(await getBillboardBalance(walletAddress));
     const farcasterUser = await getFarcasterUser(walletAddress);
     
-    // Match the FarcasterUser interface field names
     const userDataToStore = {
       wallet_address: walletAddress,
       token_balance: balance,
       farcaster_username: farcasterUser?.farcaster_username || null,
       farcaster_pfp: farcasterUser?.farcaster_pfp || null,
       updated_at: new Date().toISOString(),
-      privy_id: session?.privy_id // Add Privy ID from session
+      privy_id: session?.privy_id
     };
-
-    if (isDev) {
-      console.log('🔵 Storing user data:', userDataToStore);
-    }
     
     await redis.hset('users', {
       [walletAddress]: JSON.stringify(userDataToStore)
@@ -161,7 +165,7 @@ async function getTokenBalance(walletAddress: string, session: any): Promise<num
 
     return balance;
   } catch (error) {
-    console.error('❌ Error in getTokenBalance:', error);
+    console.error('Error in getTokenBalance:', error);
     return 0;
   }
 }
@@ -384,11 +388,20 @@ export async function POST(request: Request) {
       console.error('❌ Failed to send Pusher event:', error);
     });
 
-    return NextResponse.json({ success: true, pixel: pixelData });
+    return NextResponse.json({ success: true, pixel: pixelData }, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0'
+      }
+    });
 
   } catch (error) {
     console.error('Error placing pixel:', error);
-    return NextResponse.json({ error: 'Failed to place pixel' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to place pixel' }, { 
+      status: 500,
+      headers: {
+        'Cache-Control': 'no-store'
+      }
+    });
   }
 }
 
