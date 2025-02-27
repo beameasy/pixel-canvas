@@ -142,9 +142,7 @@ export default function Home() {
             flashMessage={null}
           />
           
-          <AdminTools 
-            onBanWallet={handleBanWallet}
-          />
+          <AdminTools />
           
           <Canvas 
             ref={canvasRef}

@@ -687,6 +687,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     if (!interactionState.isDragging) {
       drawPreviewPixel(x, y);
       onMousePosChange({ x, y });
+    } else {
+      // Clear the preview when dragging
+      drawPreviewPixel(-1, -1);
+      onMousePosChange(null);
     }
 
     // Handle dragging

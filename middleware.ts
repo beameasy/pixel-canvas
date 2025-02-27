@@ -59,6 +59,18 @@ async function checkRateLimit(ip: string, type: 'pixels' | 'canvas' | 'general')
   }
 }
 
+// New function to check if a wallet is banned
+async function isWalletBanned(walletAddress: string): Promise<boolean> {
+  if (!walletAddress) return false;
+  try {
+    const result = await redis.sismember('banned:wallets:permanent', walletAddress.toLowerCase());
+    return result === 1;
+  } catch (error) {
+    console.error('Error checking banned wallet status:', error);
+    return false; // Fail open if Redis error
+  }
+}
+
 // This function handles Privy token validation
 export async function validatePrivyToken(token: string): Promise<string | null> {
   try {
@@ -145,6 +157,18 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     
     // Add the validated Privy ID to the request headers
     res.headers.set('x-privy-id', privyId);
+    
+    // Check if the wallet is banned (only for pixel placement)
+    if (pathname === '/api/pixels' && method === 'POST' && walletAddress) {
+      const isBanned = await isWalletBanned(walletAddress);
+      if (isBanned) {
+        console.log('Banned wallet attempted pixel placement:', walletAddress);
+        return NextResponse.json({ 
+          error: 'Your wallet has been banned. You probably deserved it.',
+          banned: true
+        }, { status: 403 });
+      }
+    }
     
     // Check if the wallet is an admin and add to headers
     if (walletAddress && isAdminWallet(walletAddress)) {
