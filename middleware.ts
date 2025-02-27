@@ -14,7 +14,7 @@ const PUBLIC_ROUTES = [
 
 // Define canvas-specific rate limits
 const RATE_LIMIT = {
-  pixels: { points: 40, duration: 60 },   // More permissive, let tokenTiers handle specific cooldowns
+  pixels: { points: 150, duration: 60 },   // More permissive, let tokenTiers handle specific cooldowns
   canvas: { points: 60, duration: 60 },    // Canvas state fetching
   general: { points: 100, duration: 60 }   // Other endpoints
 };
@@ -31,6 +31,17 @@ const ADMIN_ROUTES = [
   { path: '/api/admin', method: 'ALL' },
   // Add other admin routes here
 ];
+
+// Define admin wallets array from environment variable
+const ADMIN_WALLETS = (process.env.ADMIN_WALLETS || '')
+  .split(',')
+  .map(wallet => wallet.trim().toLowerCase())
+  .filter(wallet => wallet.length > 0);
+
+// Helper function to check if wallet is an admin
+function isAdminWallet(walletAddress: string): boolean {
+  return ADMIN_WALLETS.includes(walletAddress.toLowerCase());
+}
 
 async function checkRateLimit(ip: string, type: 'pixels' | 'canvas' | 'general') {
   const key = `rate_limit:${type}:${ip}`
@@ -135,10 +146,17 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     // Add the validated Privy ID to the request headers
     res.headers.set('x-privy-id', privyId);
     
-    // For admin routes, additional verification could be done here
+    // Check if the wallet is an admin and add to headers
+    if (walletAddress && isAdminWallet(walletAddress)) {
+      res.headers.set('x-is-admin', 'true');
+      console.log('Admin access granted for wallet:', walletAddress);
+    }
+    
+    // For admin routes, additional verification
     if (isAdminRoute) {
-      // Check if the user is an admin (would need to look up in Redis or another source)
-      // For now, we'll skip this additional check
+      if (!walletAddress || !isAdminWallet(walletAddress)) {
+        return NextResponse.json({ error: 'Unauthorized - Admin access required' }, { status: 403 });
+      }
     }
   }
 

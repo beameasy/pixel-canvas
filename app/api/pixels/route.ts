@@ -224,6 +224,7 @@ export async function POST(request: Request) {
     }
 
     const walletAddress = session.wallet_address.toLowerCase();
+    const isAdmin = request.headers.get('x-is-admin') === 'true';
 
     // Ban check
     const isBanned = await redis.sismember('banned:wallets:permanent', walletAddress);
@@ -249,24 +250,26 @@ export async function POST(request: Request) {
       console.log('💰 Refreshed balance:', balance);
     }
 
-    // Balance-based cooldown check
-    if (balance === 0) {
+    // Balance-based cooldown check (skip for admins)
+    if (balance === 0 && !isAdmin) {
       return NextResponse.json({ 
         error: 'Please wait 60 seconds between pixels (0 balance)'
       }, { status: 429 });
     }
 
-    // Regular tier-based cooldown check
-    const tier = await getUserTier(balance);
-    console.log(`🔵 User ${walletAddress} with balance ${balance} has tier: ${tier.name} with cooldown: ${tier.cooldownSeconds}s`);
+    // Regular tier-based cooldown check (skip for admins)
+    if (!isAdmin) {
+      const tier = await getUserTier(balance);
+      console.log(`🔵 User ${walletAddress} with balance ${balance} has tier: ${tier.name} with cooldown: ${tier.cooldownSeconds}s`);
 
-    const lastPlaced = (await redis.hget('pixel:cooldowns', walletAddress) || '0').toString();
-    if (lastPlaced) {
-      const timeSinceLastPlaced = Date.now() - parseInt(lastPlaced);
-      if (timeSinceLastPlaced < tier.cooldownSeconds * 1000) {
-        return NextResponse.json({ 
-          error: `Please wait ${Math.ceil((tier.cooldownSeconds * 1000 - timeSinceLastPlaced) / 1000)} seconds`
-        }, { status: 429 });
+      const lastPlaced = (await redis.hget('pixel:cooldowns', walletAddress) || '0').toString();
+      if (lastPlaced) {
+        const timeSinceLastPlaced = Date.now() - parseInt(lastPlaced);
+        if (timeSinceLastPlaced < tier.cooldownSeconds * 1000) {
+          return NextResponse.json({ 
+            error: `Please wait ${Math.ceil((tier.cooldownSeconds * 1000 - timeSinceLastPlaced) / 1000)} seconds`
+          }, { status: 429 });
+        }
       }
     }
 

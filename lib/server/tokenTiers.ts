@@ -40,7 +40,13 @@ async function getTokenBalance(walletAddress: string): Promise<number> {
   return balance;
 }
 
-export async function getUserTier(balanceOrAddress: number | string): Promise<TokenTier> {
+export async function getUserTier(balanceOrAddress: number | string, isAdmin = false): Promise<TokenTier> {
+  // If user is admin, return highest tier directly
+  if (isAdmin) {
+    console.log('Admin user detected, using highest tier');
+    return TIERS[0]; // Return Diamond tier for admins
+  }
+
   let balance: number;
   
   if (typeof balanceOrAddress === 'string' && balanceOrAddress.startsWith('0x')) {
@@ -74,6 +80,16 @@ export async function getUserTier(balanceOrAddress: number | string): Promise<To
 }
 
 export async function canPlacePixel(walletAddress: string): Promise<boolean> {
+  // Check if wallet is an admin
+  const isAdmin = (process.env.ADMIN_WALLETS || '')
+    .split(',')
+    .map(wallet => wallet.trim().toLowerCase())
+    .filter(wallet => wallet.length > 0)
+    .includes(walletAddress.toLowerCase());
+  
+  // Admins can always place pixels, bypassing cooldown
+  if (isAdmin) return true;
+  
   const lastPlaced = await redis.get(`pixel:cooldown:${walletAddress}`);
   if (!lastPlaced) return true;
 
@@ -94,6 +110,16 @@ export async function canOverwritePixel(
   existingPixelData: any
 ): Promise<{ canOverwrite: boolean; message?: string }> {
   if (!existingPixelData) return { canOverwrite: true };
+  
+  // Check if wallet is an admin
+  const isAdmin = (process.env.ADMIN_WALLETS || '')
+    .split(',')
+    .map(wallet => wallet.trim().toLowerCase())
+    .filter(wallet => wallet.length > 0)
+    .includes(newWalletAddress.toLowerCase());
+  
+  // Admins can always overwrite pixels
+  if (isAdmin) return { canOverwrite: true };
 
   try {
     const [newBalance, existingBalance] = await Promise.all([
