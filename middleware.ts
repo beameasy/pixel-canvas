@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { redis } from '@/lib/server/redis'
+import { jwtVerify, createRemoteJWKSet } from 'jose'
 
 // Define public routes that don't need auth
 const PUBLIC_ROUTES = [
@@ -76,20 +77,17 @@ async function isWalletBanned(walletAddress: string): Promise<boolean> {
   }
 }
 
-// This function handles Privy token validation
+const JWKS = createRemoteJWKSet(
+  new URL('https://auth.privy.io/api/v1/apps/cm619rgk5006nbotrbkyoanze/jwks.json')
+);
+
 export async function validatePrivyToken(token: string): Promise<string | null> {
   try {
     if (!token) return null;
     
-    // Extract the payload to get the Privy ID
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    
-    const payload = Buffer.from(parts[1], 'base64').toString();
-    const data = JSON.parse(payload);
-    
-    // Return the Privy ID from the token
-    return data.sub || null;
+    // Use proper JWT verification
+    const { payload } = await jwtVerify(token, JWKS);
+    return payload.sub as string || null;
   } catch (error) {
     console.error('Error validating Privy token:', error);
     return null;
@@ -161,21 +159,36 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   // For protected and admin routes, verify authentication
   if (isProtectedRoute || isAdminRoute) {
     const privyToken = req.headers.get('x-privy-token');
-    const walletAddress = req.headers.get('x-wallet-address');
+    const walletAddress = req.headers.get('x-wallet-address')?.toLowerCase();
     
-    if (!privyToken) {
-      console.log('No Privy token provided for protected route:', pathname);
-      return NextResponse.json({ error: 'Unauthorized - Missing authentication' }, { status: 401 });
+    if (!privyToken || !walletAddress) {
+      return NextResponse.json({ error: 'Unauthorized - Missing credentials' }, { status: 401 });
     }
     
+    // Validate Privy token
     const privyId = await validatePrivyToken(privyToken);
     if (!privyId) {
-      console.log('Invalid Privy token for protected route:', pathname);
-      return NextResponse.json({ error: 'Unauthorized - Invalid authentication' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized - Invalid token' }, { status: 401 });
     }
-    
-    // Add the validated Privy ID to the request headers
+
+    // Verify wallet ownership in middleware
+    const userData = await redis.hget('users', walletAddress);
+    if (!userData) {
+      return NextResponse.json({ error: 'Unauthorized - Wallet not found' }, { status: 401 });
+    }
+
+    const parsedData = typeof userData === 'string' ? JSON.parse(userData) : userData;
+    if (parsedData.privy_id !== privyId) {
+      console.log('🚨 Attempted wallet address spoofing', {
+        wallet: walletAddress,
+        claimed_privy_id: privyId
+      });
+      return NextResponse.json({ error: 'Unauthorized - Invalid wallet' }, { status: 401 });
+    }
+
+    // Add validated data to headers
     res.headers.set('x-privy-id', privyId);
+    res.headers.set('x-verified-wallet', walletAddress);
     
     // Check if the wallet is banned (only for pixel placement)
     if (pathname === '/api/pixels' && method === 'POST' && walletAddress) {
