@@ -1,36 +1,33 @@
 import { NextResponse } from 'next/server';
 import { getFarcasterUser } from '@/components/farcaster/api/getFarcasterUser';
 import { redis } from '@/lib/server/redis';
+import { authenticateUser } from '@/app/api/_lib/authenticateUser';
 
 export async function GET(request: Request) {
   try {
-    // Get verified wallet address from middleware headers
-    const verifiedWallet = request.headers.get('x-verified-wallet');
-    
-    if (!verifiedWallet) {
-      return NextResponse.json({ 
-        error: 'Authentication required to access Farcaster data'
-      }, { status: 401 });
+    // Use the same authentication pattern as other endpoints
+    const session = await authenticateUser(request);
+    if (!session?.wallet_address) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    
+    const walletAddress = session.wallet_address.toLowerCase();
     
     // Get query params
     const { searchParams } = new URL(request.url);
     const queryAddress = searchParams.get('address')?.toLowerCase();
     
     // Only allow users to query their own verified wallet
-    if (queryAddress && queryAddress !== verifiedWallet) {
+    if (queryAddress && queryAddress !== walletAddress) {
       return NextResponse.json({ 
         error: 'You can only query Farcaster data for your own wallet'
       }, { status: 403 });
     }
     
     // Fetch Farcaster data for the verified wallet
-    const farcasterData = await getFarcasterUser(verifiedWallet);
+    const farcasterData = await getFarcasterUser(walletAddress);
     
-    return NextResponse.json({ 
-      success: true, 
-      data: farcasterData 
-    });
+    return NextResponse.json(farcasterData);
   } catch (error) {
     console.error('Error fetching Farcaster data:', error);
     return NextResponse.json({ 

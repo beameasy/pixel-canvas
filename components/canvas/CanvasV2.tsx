@@ -9,6 +9,11 @@ import { debounce } from 'lodash';
 import FlashMessage from '@/components/ui/FlashMessage';
 import { safeFetch } from '@/lib/client/safeJsonFetch';
 import { TIERS, DEFAULT_TIER } from '@/lib/server/tiers.config';
+import anime from 'animejs';
+import { Coords, PixelMetadata, colorToImage, colorToBase64, colorToRgb } from '@/lib/pixels';
+import useCanvasEventHandlers from '@/lib/hooks/useCanvasEventHandlers';
+import { Color, generateKnobMarker, GradientMarker, NormalizedPixelCoords } from '@/lib/client/CanvasFunctions';
+import useRealtimeCanvas from '@/lib/hooks/useRealtimeCanvas';
 
 declare global {
   interface Window {
@@ -38,6 +43,8 @@ interface CanvasProps {
   onTouchModeChange: (mode: 'place' | 'view') => void;
   selectionMode: boolean;
   onClearSelection: () => void;
+  profileReady: boolean;
+  isBanned?: boolean;
 }
 
 // Add interface for pixel data
@@ -52,6 +59,7 @@ type PixelData = {
   token_balance?: number;
   locked_until?: number | null;
   canOverwrite: boolean;
+  version?: number;  // Add version for concurrency control
 };
 
 export interface CanvasRef {
@@ -61,7 +69,7 @@ export interface CanvasRef {
 }
 
 // Add type for TIERS if not already defined
-type Tiers = Record<string, { refreshRate: number }>;
+type Tiers = Record<string, { cooldownSeconds: number }>;
 
 interface PixelPlacedEvent {
   pixel: PixelData;
@@ -82,7 +90,7 @@ interface UserProfile {
   updated_at?: string;
 }
 
-const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange, selectionMode, onClearSelection }, ref) => {
+const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange, selectionMode, onClearSelection, profileReady, isBanned }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { user, login } = usePrivy();
   const { wallets } = useWallets();
@@ -166,10 +174,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const [nextPlacementTime, setNextPlacementTime] = useState<number | null>(null);
 
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [flashMessage, setFlashMessage] = useState<string | null>(null);
+  const { farcasterUser } = useFarcasterUser(address, isBanned);
 
   const [isSmallScreen, setIsSmallScreen] = useState(false);
-
-  const [flashMessage, setFlashMessage] = useState<string | null>(null);
 
   const [pinchStart, setPinchStart] = useState(0);
   const [pinchScale, setPinchScale] = useState(1);
@@ -201,9 +209,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Use dynamic canvas size in calculations
   const PIXEL_SIZE = canvasSize / GRID_SIZE;
-
-  // Use your existing Farcaster hook
-  const { farcasterUser } = useFarcasterUser(address);
 
   // Update the initial view calculation
   useEffect(() => {
@@ -394,81 +399,43 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Single useEffect to handle profile and balance
   useEffect(() => {
-    // Create a flag to track if profile has been checked
-    const profileChecked = sessionStorage.getItem('profileChecked');
-    
     const checkProfileAndBalance = async () => {
-      if (!address || !user?.id) return;
+      if (!authenticated || !profileReady) {
+        return; // Don't attempt if not authenticated or profile not ready
+      }
       
       try {
-        // First make sure profile exists
-        if (!profileChecked) {
-          const token = await getAccessToken();
-          
-          // Check/create profile first
-          const profileResponse = await fetch('/api/users/check-profile', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-wallet-address': address.toLowerCase(),
-              ...(token && { 'x-privy-token': token })
-            },
-            body: JSON.stringify({ 
-              wallet_address: address.toLowerCase(),
-              privy_id: user.id 
-            })
-          });
-          
-          if (!profileResponse.ok) {
-            throw new Error('Failed to check profile');
-          }
-          
-          const profileData = await profileResponse.json();
-          setUserProfile({
-            farcaster_username: profileData.farcaster_username || null,
-            farcaster_pfp: profileData.farcaster_pfp || null,
-            token_balance: Number(profileData.balance || 0),
-            last_active: undefined,
-            updated_at: undefined
-          });
-          
-          // Set flag to avoid repeated profile checks
-          sessionStorage.setItem('profileChecked', 'true');
-          
-          // No need to fetch balance separately, we already have it
-          return;
-        }
-        
-        // Only fetch balance separately if profile already exists
+        // Now this will only run after profile is created
         const token = await getAccessToken();
-        const response = await fetch('/api/users/balance', {
+        
+        const balanceResponse = await fetch("/api/users/balance", {
           headers: {
-            'x-wallet-address': address,
+            'x-wallet-address': address || '',
             ...(token && { 'x-privy-token': token })
           }
         });
         
-        if (!response.ok) {
-          throw new Error('Failed to fetch balance');
+        if (!balanceResponse.ok) {
+          throw new Error("Failed to fetch balance");
         }
         
-        const data = await response.json();
-        if (data.balance !== undefined) {
+        const balanceData = await balanceResponse.json();
+        if (balanceData.balance !== undefined) {
           setUserProfile(prev => ({
             farcaster_username: prev?.farcaster_username ?? null,
             farcaster_pfp: prev?.farcaster_pfp ?? null,
-            token_balance: Number(data.balance),
+            token_balance: Number(balanceData.balance),
             last_active: prev?.last_active ?? undefined,
             updated_at: prev?.updated_at ?? undefined
           }));
         }
       } catch (error) {
-        console.error('Failed to fetch profile/balance:', error);
+        console.error("Failed to fetch profile/balance:", error);
       }
     };
     
     checkProfileAndBalance();
-  }, [address, user?.id]);
+  }, [authenticated, profileReady]);
 
   // 3. Defer non-critical UI setup
   useEffect(() => {
@@ -842,9 +809,22 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     needsRender.current = true;
   }, [canvasState.view, canvasState.pixels]);
 
-  // Update the fetchBalance function to accept a force parameter
+  // Update the fetchBalance function to accept a force parameter and respect profileReady
   const fetchBalance = useCallback(async (force = false) => {
-    if (!address || !user?.id) return;
+    if (!authenticated) {
+      console.log("💰 [Balance] Not authenticated, skipping balance fetch");
+      return;
+    }
+    
+    if (isBanned) {
+      console.log("🚫 [Balance] Wallet is banned, skipping balance fetch");
+      return;
+    }
+
+    if (!profileReady) {
+      console.log("💰 [Balance] Profile not ready, skipping balance fetch");
+      return;
+    }
     
     const now = Date.now();
     // Skip if recently fetched and not forced
@@ -862,7 +842,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       
       const response = await fetch(`/api/users/balance${cacheBuster}`, {
         headers: {
-          'x-wallet-address': address,
+          'x-wallet-address': address || '',
           ...(token && { 'x-privy-token': token }),
           // Add no-cache header when forcing refresh
           ...(force && { 'Cache-Control': 'no-cache, no-store' })
@@ -893,120 +873,22 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     } catch (error) {
       console.error('Failed to fetch balance:', error);
     }
-  }, [address, user?.id, userProfile?.token_balance]);
+  }, [authenticated, profileReady, address, user?.id, getAccessToken, isBanned]);
 
-  // Modify the handlePlacePixel function to force a balance refresh
+  // Modify the handlePlacePixel function to use the handlePixelPlacement function which already has the correct authentication and visual feedback
   const handlePlacePixel = async (x: number, y: number, color: string) => {
-    try {
-      // Store the key for this pixel
-      const key = `${x},${y}`;
-      
-      // Store previous pixel state to revert if needed
-      const previousPixel = canvasState.pixels.get(key);
-      
-      // Create optimistic pixel data
-      const optimisticPixel: PixelData = {
-        x,
-        y,
-        color,
-        wallet_address: address || undefined,
-        farcaster_username: farcasterUser?.username || null,
-        farcaster_pfp: farcasterUser?.pfpUrl || null,
-        placed_at: new Date().toISOString(),
-        token_balance: userProfile?.token_balance || 0,
-        locked_until: null,
-        canOverwrite: false
-      };
-      
-      // Optimistically update state
-      setCanvasState(prev => {
-        const newPixels = new Map(prev.pixels);
-        newPixels.set(key, optimisticPixel);
-        return {
-          ...prev,
-          pixels: newPixels
-        };
-      });
-      
-      // Also do the visual update
-      drawSinglePixel(x, y, color);
-      
-      // Queue API request
-      const response = await fetch('/api/pixels', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-wallet-address': address || '',
-          'x-privy-token': (await getAccessToken()) || ''
-        },
-        body: JSON.stringify({ x, y, color })
-      });
-
-      if (!response.ok) {
-        // Revert to previous pixel state on error
-        setCanvasState(prev => {
-          const newPixels = new Map(prev.pixels);
-          if (previousPixel) {
-            newPixels.set(key, previousPixel);
-          } else {
-            newPixels.delete(key);
-          }
-          return {
-            ...prev,
-            pixels: newPixels
-          };
-        });
-        
-        // Redraw the previous pixel if it existed
-        if (previousPixel) {
-          drawSinglePixel(x, y, previousPixel.color);
-        }
-        
-        // Clear preview pixel on error
-        setInteractionState(prev => ({
-          ...prev,
-          previewPixel: { x: -1, y: -1 }
-        }));
-        
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to place pixel');
-      }
-
-      // Update state with server data
-      const data = await response.json();
-      setCanvasState(prev => {
-        const newPixels = new Map(prev.pixels);
-        newPixels.set(key, data.pixel);
-        return {
-          ...prev,
-          pixels: newPixels
-        };
-      });
-
-      // Force a balance refresh after successful pixel placement
-      await fetchBalance(true);
-
-      // After successful placement
-      const cooldownMs = getClientTier(data.pixel.token_balance || 0).cooldownSeconds * 1000;
-      const nextTime = Date.now() + cooldownMs;
-      setNextPlacementTime(nextTime);
-      localStorage.setItem('nextPlacementTime', nextTime.toString());
-      
-      // Reset nextPlacementTime after cooldown
-      setTimeout(() => {
-        setNextPlacementTime(null);
-        localStorage.removeItem('nextPlacementTime');
-      }, cooldownMs);
-
-    } catch (error) {
-      console.error('Failed to place pixel:', error);
-      setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
-      // Ensure preview pixel is cleared on any error
-      setInteractionState(prev => ({
-        ...prev,
-        previewPixel: { x: -1, y: -1 }
-      }));
+    if (!authenticated) {
+      onAuthError();
+      return;
     }
+    
+    if (!profileReady) {
+      console.warn("Profile not ready, cannot place pixel yet");
+      return;
+    }
+    
+    // Use the handlePixelPlacement function which already has proper authentication and visual feedback
+    return handlePixelPlacement(x, y, color);
   };
 
   // Add useEffect to auto-clear flash message
@@ -1099,9 +981,26 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   const debouncedFetchProfile = useCallback(
     debounce(async (address: string) => {
-      const response = await fetch(`/api/farcaster?address=${address}`);
-      const data = await response.json();
-      setUserProfile(data);
+      try {
+        // Add proper authentication headers
+        const token = await getAccessToken();
+        const response = await fetch(`/api/farcaster?address=${address}`, {
+          headers: {
+            'x-wallet-address': address,
+            ...(token && { 'x-privy-token': token })
+          }
+        });
+        
+        if (!response.ok) {
+          console.warn('Failed to fetch Farcaster profile:', response.status);
+          return;
+        }
+        
+        const data = await response.json();
+        setUserProfile(data);
+      } catch (error) {
+        console.error('Error fetching Farcaster profile:', error);
+      }
     }, 500),
     []
   );
@@ -1314,13 +1213,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Draw pixels with proper scaling and position
     canvasState.pixels.forEach((pixel, key) => {
       const [x, y] = key.split(',').map(Number);
-      const screenX = x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x;
-      const screenY = y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y;
-      
       ctx.fillStyle = pixel.color;
       ctx.fillRect(
-        screenX,
-        screenY,
+        x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x,
+        y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y,
         PIXEL_SIZE * canvasState.view.scale,
         PIXEL_SIZE * canvasState.view.scale
       );
@@ -1515,11 +1411,43 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // For pixel placement, consolidate logs
   const handlePixelPlacement = async (x: number, y: number, color: string) => {
     try {
+      // Check if the wallet is banned before proceeding
+      if (isBanned) {
+        console.log('🚫 Cannot place pixel: Wallet is banned');
+        setFlashMessage('Your wallet has been banned from placing pixels');
+        return false;
+      }
+      
       console.log('🎨 Starting pixel placement:', { x, y, color });
       const previousPixel = canvasState.pixels.get(`${x},${y}`);
       console.log('🎨 Previous pixel state:', previousPixel);
 
-      // Make API request before updating local state
+      // Create a temporary pixel for optimistic update
+      const tempPixel: PixelData = {
+        x, 
+        y, 
+        color,
+        wallet_address: address || '',
+        farcaster_username: userProfile?.farcaster_username || null,
+        farcaster_pfp: userProfile?.farcaster_pfp || null,
+        placed_at: new Date().toISOString(),
+        token_balance: userProfile?.token_balance,
+        locked_until: null,
+        canOverwrite: false,
+        version: previousPixel?.version ? previousPixel.version + 1 : 1
+      };
+
+      // Apply optimistic update immediately
+      setCanvasState(prev => {
+        const newPixels = new Map(prev.pixels);
+        newPixels.set(`${x},${y}`, tempPixel);
+        return {
+          ...prev,
+          pixels: newPixels
+        };
+      });
+
+      // Make API request after updating local state
       const response = await fetch('/api/pixels', {
         method: 'POST',
         headers: {
@@ -1527,20 +1455,54 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           'x-wallet-address': address || '',
           'x-privy-token': (await getAccessToken()) || ''
         },
-        body: JSON.stringify({ x, y, color })
+        body: JSON.stringify({ 
+          x, 
+          y, 
+          color,
+          version: previousPixel?.version || 0  // Send current version for conflict detection
+        })
       });
 
       console.log('🎨 API response status:', response.status);
 
       if (!response.ok) {
-        console.log('🎨 Placement failed, keeping previous state');
+        console.log('🎨 Placement failed, reverting to previous state');
         const error = await response.json();
         console.log('🔵 Received error:', error);
-        throw new Error(error.error || 'Failed to place pixel');
+        
+        // Revert to previous state if placement failed
+        setCanvasState(prev => {
+          const newPixels = new Map(prev.pixels);
+          if (previousPixel) {
+            newPixels.set(`${x},${y}`, previousPixel);
+          } else {
+            newPixels.delete(`${x},${y}`);
+          }
+          return {
+            ...prev,
+            pixels: newPixels
+          };
+        });
+        
+        // Special handling for version conflicts
+        if (response.status === 409 && error.currentVersion) {
+          // If we have a version conflict, fetch the latest canvas state
+          console.log('🔄 Version conflict detected, refreshing canvas state');
+          setFlashMessage('Pixel was modified by someone else. Canvas refreshed.');
+          loadCanvasState(true); // Force refresh the canvas state
+        } else if (response.status === 403 && error.banned) {
+          // Specific handling for banned wallets
+          console.log('🚫 Received ban response from server');
+          setFlashMessage(error.error || 'Your wallet has been banned from placing pixels');
+          // No need to update isBanned state here as it's already managed by the hook
+        } else {
+          throw new Error(error.error || 'Failed to place pixel');
+        }
+        return false;
       }
 
-      // Only update local state if API call succeeds
-      console.log('🎨 Placement succeeded, updating state');
+      // Update with confirmed data from server
+      console.log('🎨 Placement succeeded, updating with server data');
       const data = await response.json();
       setCanvasState(prev => {
         const newPixels = new Map(prev.pixels);
@@ -1550,10 +1512,30 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           pixels: newPixels
         };
       });
+      
+      // Set cooldown based on user's tier
+      const userBalance = userProfile?.token_balance || 0;
+      const userTier = getClientTier(userBalance);
+      const cooldownMs = userTier.cooldownSeconds * 1000;
+      const nextTime = Date.now() + cooldownMs;
+      
+      // Set the nextPlacementTime in state and localStorage
+      setNextPlacementTime(nextTime);
+      localStorage.setItem('nextPlacementTime', nextTime.toString());
+      console.log(`🕒 Cooldown set: ${cooldownMs/1000}s until next pixel placement`);
+      
+      // Force refresh the token balance from Alchemy
+      setTimeout(() => {
+        console.log('🔄 Refreshing token balance after pixel placement');
+        fetchBalance(true);
+      }, 500); // Small delay to ensure backend has time to set the flag
     } catch (error) {
       console.error('Failed to place pixel:', error);
       setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
+      return false;
     }
+    
+    return true;
   };
 
   // Add initialization for overlay canvas
@@ -1627,44 +1609,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       timestamp: userProfile?.updated_at
     });
   }, [userProfile]);
-
-  // Modify the balance fetch effect
-  useEffect(() => {
-    if (!address) {
-      console.log('🔵 No address available for balance fetch');
-      return;
-    }
-    
-    const fetchBalance = async () => {
-      try {
-        console.log('🔵 Fetching balance for:', address);
-        const token = await getAccessToken();
-        const response = await fetch('/api/users/balance', {
-          headers: {
-            'x-wallet-address': address,
-            ...(token && { 'x-privy-token': token })
-          }
-        });
-        const data = await response.json();
-        console.log('🔵 Balance response:', data);
-        
-        if (data.balance !== undefined) {
-          console.log('🔵 Setting new balance:', data.balance);
-          setUserProfile(prev => ({
-            farcaster_username: prev?.farcaster_username ?? null,
-            farcaster_pfp: prev?.farcaster_pfp ?? null,
-            token_balance: Number(data.balance),
-            last_active: prev?.last_active ?? undefined,
-            updated_at: prev?.updated_at ?? undefined
-          }));
-        }
-      } catch (error) {
-        console.error('❌ Failed to fetch balance:', error);
-      }
-    };
-
-    fetchBalance();
-  }, [address]);
 
   // Add effect to clear preview when color changes
   useEffect(() => {

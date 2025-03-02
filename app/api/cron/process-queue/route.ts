@@ -215,12 +215,14 @@ export async function GET(request: Request) {
         const batch = parsedPixels.slice(i, i + BATCH_SIZE);
         console.log(`📋 Processing pixel batch ${i}-${i+batch.length-1} of ${parsedPixels.length}...`);
         
-        // Clean the batch - remove id field to let Supabase generate it
+        // Clean the batch - properly handle the version field
         const processedBatch = batch.map(pixel => {
           const { id, ...pixelWithoutId } = pixel;
           return {
             ...pixelWithoutId,
-            wallet_address: pixelWithoutId.wallet_address?.toLowerCase() // Ensure lowercase
+            wallet_address: pixelWithoutId.wallet_address?.toLowerCase(), // Ensure lowercase
+            // Ensure version field is included and is a number
+            version: typeof pixelWithoutId.version === 'number' ? pixelWithoutId.version : 1
           };
         });
         

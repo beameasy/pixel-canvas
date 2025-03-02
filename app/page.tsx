@@ -11,9 +11,11 @@ import PixelFeed from '@/components/PixelFeed';
 import { CanvasRef } from '@/components/canvas/CanvasV2';
 import { pusherManager } from '@/lib/client/pusherManager';
 import Head from 'next/head';
+import { useBanStatus } from '@/lib/hooks/useBanStatus';
 
 export default function Home() {
   const { authenticated, user, getAccessToken } = usePrivy();
+  const { isBanned, banReason } = useBanStatus();
   const [selectedColor, setSelectedColor] = useState('#000000');
   const [showError, setShowError] = useState(false);
   const [mousePos, setMousePos] = useState({ x: -1, y: -1 });
@@ -21,6 +23,7 @@ export default function Home() {
   const canvasRef = useRef<CanvasRef>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showTokenomicsPopup, setShowTokenomicsPopup] = useState(false);
+  const [profileReady, setProfileReady] = useState(false);
 
   const handleAuthError = () => {
     setShowError(true);
@@ -53,40 +56,47 @@ export default function Home() {
 
   useEffect(() => {
     const storeUserData = async () => {
-      if (authenticated && user?.wallet?.address) {
-        try {
-          const token = await getAccessToken();
-          if (!token) return;
-
-          console.log('📝 Checking/creating user profile...');
-          
-          // First, ensure the profile exists
-          const profileResponse = await fetch('/api/users/check-profile', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-wallet-address': user.wallet.address,
-              'x-privy-token': token
-            }
-          });
-
-          if (!profileResponse.ok) {
-            console.error('Failed to store user data:', await profileResponse.text());
-            throw new Error('Failed to store user data');
-          }
-
-          // Profile now exists - notify Canvas it can fetch balance
-          window.localStorage.setItem('profileReady', 'true');
-          // Use a custom event to notify Canvas component
-          window.dispatchEvent(new Event('profileReady'));
-          
-          console.log('✅ Profile check/creation complete, Canvas can now fetch balance');
-          
-          // Reconnect pusher after profile is confirmed
-          pusherManager.reconnect();
-        } catch (error) {
-          console.error('Error in profile flow:', error);
+      console.log("📝 Checking/creating user profile...");
+      
+      try {
+        // Skip profile creation for banned wallets
+        if (isBanned) {
+          console.log("🚫 Wallet is banned, skipping profile creation");
+          return;
         }
+
+        const token = await getAccessToken();
+        if (!token) return;
+
+        if (!user || !user.wallet) {
+          console.log("User or wallet not available yet");
+          return;
+        }
+
+        const response = await fetch("/api/users/check-profile", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-wallet-address": user.wallet.address,
+            "x-privy-token": token
+          }
+        });
+
+        if (!response.ok) {
+          console.error('Failed to store user data:', await response.text());
+          throw new Error('Failed to store user data');
+        }
+
+        console.log("✅ Profile check/creation complete, Canvas can now fetch balance");
+        
+        setProfileReady(true);
+        
+        setTimeout(() => {
+          console.log("🔄 Pusher reconnection initiated after profile setup");
+          pusherManager.reconnect();
+        }, 500);
+      } catch (error) {
+        console.error("Error checking/creating profile:", error);
       }
     };
 
@@ -95,7 +105,7 @@ export default function Home() {
     return () => {
       // Cleanup if needed
     };
-  }, [authenticated, user?.wallet?.address, getAccessToken]);
+  }, [authenticated, user?.wallet?.address, getAccessToken, isBanned]);
 
   return (
     <>
@@ -121,6 +131,16 @@ export default function Home() {
               <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 z-50">
                 <div className="font-mono text-red-500 text-sm animate-pulse bg-slate-900/90 px-4 py-2 rounded-lg">
                   connect wallet to place pixels
+                </div>
+              </div>
+            )}
+
+            {isBanned && (
+              <div className="absolute -top-14 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-sm">
+                <div className="font-mono text-red-500 text-sm bg-slate-900/90 px-4 py-2 rounded-lg border border-red-500">
+                  <p className="font-bold">🚫 Your wallet has been banned</p>
+                  {banReason && <p className="text-xs mt-1">{banReason}</p>}
+                  <p className="text-xs mt-1">You can view the canvas but cannot place pixels.</p>
                 </div>
               </div>
             )}
@@ -153,13 +173,15 @@ export default function Home() {
                 ref={canvasRef}
                 selectedColor={selectedColor}
                 onColorSelect={setSelectedColor}
-                authenticated={authenticated}
+                authenticated={!!user}
                 onAuthError={handleAuthError}
                 onMousePosChange={(pos) => pos ? setMousePos(pos) : setMousePos({ x: -1, y: -1 })}
                 touchMode={touchMode}
                 onTouchModeChange={setTouchMode}
                 selectionMode={false}
                 onClearSelection={() => {}}
+                profileReady={profileReady && !isBanned}
+                isBanned={isBanned}
               />
             )}
           </div>

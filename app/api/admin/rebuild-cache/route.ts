@@ -108,7 +108,27 @@ export async function POST(request: Request) {
     const pixelEntries = Object.entries(canvasPixels);
     for (let i = 0; i < pixelEntries.length; i += BATCH_SIZE) {
       const batch = Object.fromEntries(pixelEntries.slice(i, i + BATCH_SIZE));
-      await redis.hset('canvas:pixels', batch);
+      // Format pixels for Redis
+      const formattedPixels = Object.entries(batch).map(([key, value]) => {
+        const pixel = JSON.parse(value as string);
+        // Ensure all pixels have a version field
+        if (!pixel.version) {
+          pixel.version = 1; // Default to version 1 for historical pixels
+        }
+        return [key, JSON.stringify(pixel)];
+      }).flat();
+      
+      // Update Redis batch
+      const redisBatch: Record<string, string> = {};
+      for (let i = 0; i < formattedPixels.length; i += 2) {
+        const key = formattedPixels[i] as string;
+        const value = formattedPixels[i + 1] as string;
+        redisBatch[key] = value;
+      }
+      
+      // Update canvas pixels in batches
+      console.log(`🔄 Updating Redis cache with ${Object.keys(redisBatch).length} pixels`);
+      await redis.hset('canvas:pixels', redisBatch);
     }
 
     // Update history in much smaller batches to avoid size limit

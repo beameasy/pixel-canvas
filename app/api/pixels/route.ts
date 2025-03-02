@@ -80,6 +80,7 @@ interface PixelMetadata {
   token_balance: number;
   locked_until?: number;
   placed_at: number;
+  version: number;  // Change version to required field for concurrency control
 }
 
 // Add price calculation functions
@@ -219,7 +220,6 @@ async function triggerQueueProcessing(retries = 3) {
   }
 }
 
-// Modify POST endpoint
 export async function POST(request: Request) {
   try {
     const session = await authenticateUser(request);
@@ -277,7 +277,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const { x, y, color } = await request.json();
+    const { x, y, color, version } = await request.json();
 
     // Validate coordinates
     if (!Number.isInteger(x) || !Number.isInteger(y) || 
@@ -294,11 +294,24 @@ export async function POST(request: Request) {
       }, { status: 400 });
     }
 
-    // Get existing pixel data
+    // Get existing pixel data for version check
     const existingPixel = await redis.hget('canvas:pixels', `${x},${y}`);
     const existingPixelData = existingPixel ? 
       (typeof existingPixel === 'string' ? JSON.parse(existingPixel) : existingPixel) 
       : null;
+    
+    // Enhanced version conflict check
+    if (existingPixelData?.version) {
+      // If client version is undefined or doesn't match the current version
+      if (version === undefined || version !== existingPixelData.version) {
+        console.log(`🔄 Version conflict detected: Client version ${version}, Server version ${existingPixelData.version}`);
+        return NextResponse.json({ 
+          error: 'Pixel has been modified since you last viewed it', 
+          currentVersion: existingPixelData.version,
+          currentPixel: existingPixelData
+        }, { status: 409 });  // 409 Conflict
+      }
+    }
 
     // Check if can overwrite
     const overwriteCheck = await canOverwritePixel(walletAddress, existingPixelData);
@@ -308,42 +321,53 @@ export async function POST(request: Request) {
       }, { status: 403 });
     }
 
+    // Current timestamp for consistency
+    const now = Date.now();
+    const isoNow = new Date().toISOString();
+    
+    // Calculate new version - increment if exists, otherwise start at 1
+    const newVersion = existingPixelData?.version ? existingPixelData.version + 1 : 1;
+
     const pixelData = {
-      id: `${x}-${y}-${Date.now()}`,
+      id: `${x}-${y}-${now}`,
       x,
       y,
       color,
       wallet_address: walletAddress,
-      placed_at: new Date().toISOString(),
+      placed_at: isoNow,
       farcaster_username: user?.farcaster_username,
       farcaster_pfp: user?.farcaster_pfp,
-      token_balance: balance
+      token_balance: balance,
+      version: newVersion  // Add version number for concurrency control
     };
 
-    // Store both current state and history
-    await Promise.all([
-      // Current state
-      redis.hset('canvas:pixels', {
-        [`${x},${y}`]: JSON.stringify(pixelData)
-      }),
-      // History for leaderboard - using zadd for sorted set
-      redis.zadd('canvas:history', {
-        score: Date.now(),
-        member: JSON.stringify(pixelData)
-      }),
-      // Cooldown
-      redis.hset('pixel:cooldowns', {
-        [walletAddress]: Date.now().toString()
-      }),
-      // After adding pixel to Redis and to the queue
-      redis.rpush('supabase:pixels:queue', JSON.stringify(pixelData)),
-      // Mark that the user's balance changed recently
-      redis.set(`user:${walletAddress}:balance_changed`, "true", {ex: 60})
-    ]);
+    // Use Redis transaction to ensure atomic operations
+    const multi = redis.multi();
+    
+    // Prepare all operations
+    multi.hset('canvas:pixels', {
+      [`${x},${y}`]: JSON.stringify(pixelData)
+    });
+    
+    multi.zadd('canvas:history', {
+      score: now,
+      member: JSON.stringify(pixelData)
+    });
+    
+    multi.hset('pixel:cooldowns', {
+      [walletAddress]: now.toString()
+    });
+    
+    multi.rpush('supabase:pixels:queue', JSON.stringify(pixelData));
+    
+    multi.set(`user:${walletAddress}:balance_changed`, "true", {ex: 60});
+    
+    // Execute all operations atomically
+    await multi.exec();
 
     // Trigger queue processing if queue has enough items
     const queueLength = await redis.llen('supabase:pixels:queue');
-    if (queueLength >= 50) { // Process in batches of 50 or more
+    if (queueLength >= 10) { // Process in batches of 50 or more
       // Check if processing is already active
       const processingActive = await redis.get('queue_processing_active');
       if (!processingActive) {
