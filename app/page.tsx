@@ -3,6 +3,7 @@
 import Canvas from '@/components/canvas/CanvasV2';
 import PixelLogo from '@/components/ui/PixelLogo';
 import Controls from '@/components/layout/Controls';
+import TokenomicsPopup from '@/components/ui/TokenomicsPopup';
 import { usePrivy, type User as PrivyUser } from '@privy-io/react-auth';
 import { useState, useRef, useEffect } from 'react';
 import { AdminTools } from '@/components/admin/AdminTools';
@@ -19,6 +20,7 @@ export default function Home() {
   const [touchMode, setTouchMode] = useState<'place' | 'view'>('place');
   const canvasRef = useRef<CanvasRef>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [showTokenomicsPopup, setShowTokenomicsPopup] = useState(false);
 
   const handleAuthError = () => {
     setShowError(true);
@@ -40,6 +42,15 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, []);
 
+  // Show tokenomics popup after a short delay
+  useEffect(() => {
+    const popupTimer = setTimeout(() => {
+      setShowTokenomicsPopup(true);
+    }, 2000); // Show popup after 2 seconds
+    
+    return () => clearTimeout(popupTimer);
+  }, []);
+
   useEffect(() => {
     const storeUserData = async () => {
       if (authenticated && user?.wallet?.address) {
@@ -47,7 +58,10 @@ export default function Home() {
           const token = await getAccessToken();
           if (!token) return;
 
-          const response = await fetch('/api/users/check-profile', {
+          console.log('📝 Checking/creating user profile...');
+          
+          // First, ensure the profile exists
+          const profileResponse = await fetch('/api/users/check-profile', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -56,13 +70,22 @@ export default function Home() {
             }
           });
 
-          if (!response.ok) {
+          if (!profileResponse.ok) {
+            console.error('Failed to store user data:', await profileResponse.text());
             throw new Error('Failed to store user data');
           }
 
+          // Profile now exists - notify Canvas it can fetch balance
+          window.localStorage.setItem('profileReady', 'true');
+          // Use a custom event to notify Canvas component
+          window.dispatchEvent(new Event('profileReady'));
+          
+          console.log('✅ Profile check/creation complete, Canvas can now fetch balance');
+          
+          // Reconnect pusher after profile is confirmed
           pusherManager.reconnect();
         } catch (error) {
-          // Silent fail in production - log to monitoring service here
+          console.error('Error in profile flow:', error);
         }
       }
     };
@@ -70,7 +93,7 @@ export default function Home() {
     storeUserData();
     
     return () => {
-     
+      // Cleanup if needed
     };
   }, [authenticated, user?.wallet?.address, getAccessToken]);
 
@@ -142,6 +165,12 @@ export default function Home() {
           </div>
         </main>
       </div>
+      
+      {/* Tokenomics Popup */}
+      <TokenomicsPopup 
+        isOpen={showTokenomicsPopup} 
+        onClose={() => setShowTokenomicsPopup(false)} 
+      />
     </>
   );
 } 

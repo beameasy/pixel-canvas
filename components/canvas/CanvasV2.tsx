@@ -7,6 +7,7 @@ import { useFarcasterUser } from '@/components/farcaster/hooks/useFarcasterUser'
 import { getCanvasChannel } from '@/lib/client/pusher';
 import { debounce } from 'lodash';
 import FlashMessage from '@/components/ui/FlashMessage';
+import { safeFetch } from '@/lib/client/safeJsonFetch';
 import { TIERS, DEFAULT_TIER } from '@/lib/server/tiers.config';
 
 declare global {
@@ -173,6 +174,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const [pinchStart, setPinchStart] = useState(0);
   const [pinchScale, setPinchScale] = useState(1);
 
+  // Add this near other refs
+  const lastBalanceFetchTime = useRef<number>(0);
+  const BALANCE_FETCH_COOLDOWN = 30000; // 30 seconds in milliseconds
+
   useEffect(() => {
     const updateCanvasSize = () => {
       if (containerRef.current) {
@@ -284,8 +289,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     lastLoadRef.current = now;
     
     try {
-      const response = await fetch('/api/canvas');
-      const data = await response.json();
+      const data = await safeFetch('/api/canvas');
       
       setCanvasState(prev => ({
         ...prev,
@@ -390,50 +394,80 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Single useEffect to handle profile and balance
   useEffect(() => {
-    if (!address || !user?.id || isCheckingProfile) return;
+    // Create a flag to track if profile has been checked
+    const profileChecked = sessionStorage.getItem('profileChecked');
     
-    const checkProfile = async () => {
+    const checkProfileAndBalance = async () => {
+      if (!address || !user?.id) return;
+      
       try {
-        setIsCheckingProfile(true);
-        const headers = new Headers({
-          'Content-Type': 'application/json',
-          'x-wallet-address': address.toLowerCase()
-        });
-        if (user?.id) {
+        // First make sure profile exists
+        if (!profileChecked) {
           const token = await getAccessToken();
-          if (token) headers.set('x-privy-token', token);
-        }
-
-        const response = await fetch('/api/users/check-profile', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ 
-            wallet_address: address.toLowerCase(),
-            privy_id: user.id 
-          })
-        });
-
-        const data = await response.json();
-        if (response.ok && data.balance !== undefined) {
-          setUserProfile(prev => {
-            if (prev?.token_balance === Number(data.balance)) return prev;
-            return {
-              farcaster_username: prev?.farcaster_username ?? null,
-              farcaster_pfp: prev?.farcaster_pfp ?? null,
-              token_balance: Number(data.balance),
-              last_active: prev?.last_active,
-              updated_at: prev?.updated_at
-            };
+          
+          // Check/create profile first
+          const profileResponse = await fetch('/api/users/check-profile', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-wallet-address': address.toLowerCase(),
+              ...(token && { 'x-privy-token': token })
+            },
+            body: JSON.stringify({ 
+              wallet_address: address.toLowerCase(),
+              privy_id: user.id 
+            })
           });
+          
+          if (!profileResponse.ok) {
+            throw new Error('Failed to check profile');
+          }
+          
+          const profileData = await profileResponse.json();
+          setUserProfile({
+            farcaster_username: profileData.farcaster_username || null,
+            farcaster_pfp: profileData.farcaster_pfp || null,
+            token_balance: Number(profileData.balance || 0),
+            last_active: undefined,
+            updated_at: undefined
+          });
+          
+          // Set flag to avoid repeated profile checks
+          sessionStorage.setItem('profileChecked', 'true');
+          
+          // No need to fetch balance separately, we already have it
+          return;
+        }
+        
+        // Only fetch balance separately if profile already exists
+        const token = await getAccessToken();
+        const response = await fetch('/api/users/balance', {
+          headers: {
+            'x-wallet-address': address,
+            ...(token && { 'x-privy-token': token })
+          }
+        });
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch balance');
+        }
+        
+        const data = await response.json();
+        if (data.balance !== undefined) {
+          setUserProfile(prev => ({
+            farcaster_username: prev?.farcaster_username ?? null,
+            farcaster_pfp: prev?.farcaster_pfp ?? null,
+            token_balance: Number(data.balance),
+            last_active: prev?.last_active ?? undefined,
+            updated_at: prev?.updated_at ?? undefined
+          }));
         }
       } catch (error) {
-        console.error('Failed to check profile:', error);
-      } finally {
-        setIsCheckingProfile(false);
+        console.error('Failed to fetch profile/balance:', error);
       }
     };
-
-    checkProfile();
+    
+    checkProfileAndBalance();
   }, [address, user?.id]);
 
   // 3. Defer non-critical UI setup
@@ -808,16 +842,30 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     needsRender.current = true;
   }, [canvasState.view, canvasState.pixels]);
 
-  // Add a function to fetch balance
-  const fetchBalance = useCallback(async () => {
+  // Update the fetchBalance function to accept a force parameter
+  const fetchBalance = useCallback(async (force = false) => {
     if (!address || !user?.id) return;
     
+    const now = Date.now();
+    // Skip if recently fetched and not forced
+    if (!force && now - lastBalanceFetchTime.current < BALANCE_FETCH_COOLDOWN) {
+      console.log('🔵 Balance fetch skipped (cooldown active)');
+      return;
+    }
+    
     try {
+      console.log(`🔵 Fetching balance for: ${address}${force ? ' (forced)' : ''}`);
       const token = await getAccessToken();
-      const response = await fetch('/api/users/balance', {
+      
+      // Add cache-busting parameter when forced
+      const cacheBuster = force ? `?t=${now}` : '';
+      
+      const response = await fetch(`/api/users/balance${cacheBuster}`, {
         headers: {
           'x-wallet-address': address,
-          ...(token && { 'x-privy-token': token })
+          ...(token && { 'x-privy-token': token }),
+          // Add no-cache header when forcing refresh
+          ...(force && { 'Cache-Control': 'no-cache, no-store' })
         }
       });
       
@@ -826,48 +874,28 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       }
       
       const data = await response.json();
-      console.log('🔵 Balance response:', data);
+      lastBalanceFetchTime.current = now; // Update the timestamp
       
       if (data.balance !== undefined) {
         setUserProfile(prev => ({
           farcaster_username: prev?.farcaster_username ?? null,
           farcaster_pfp: prev?.farcaster_pfp ?? null,
           token_balance: Number(data.balance),
-          last_active: prev?.last_active,
-          updated_at: prev?.updated_at
+          last_active: prev?.last_active ?? undefined,
+          updated_at: prev?.updated_at ?? undefined
         }));
-        console.log('🔵 User profile updated:', { 
-          balance: Number(data.balance), 
-          timestamp: Date.now() 
+        console.log('🔵 Balance updated:', {
+          new: Number(data.balance),
+          old: userProfile?.token_balance,
+          timestamp: now
         });
       }
     } catch (error) {
       console.error('Failed to fetch balance:', error);
     }
-  }, [address, user?.id]);
+  }, [address, user?.id, userProfile?.token_balance]);
 
-  // Fetch balance on mount and when address/user changes
-  useEffect(() => {
-    fetchBalance();
-  }, [fetchBalance]);
-
-  // Listen for pixel placement events
-  useEffect(() => {
-    if (!address) return;
-
-    const channel = getCanvasChannel();
-    channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
-      if (data.pixel.wallet_address?.toLowerCase() === address.toLowerCase()) {
-        fetchBalance();
-      }
-    });
-
-    return () => {
-      channel.unbind('pixel-placed');
-    };
-  }, [address, fetchBalance]);
-
-  // Update handlePlacePixel to fetch balance after placement
+  // Modify the handlePlacePixel function to force a balance refresh
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     try {
       // Store the key for this pixel
@@ -955,7 +983,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         };
       });
 
-      await fetchBalance();
+      // Force a balance refresh after successful pixel placement
+      await fetchBalance(true);
 
       // After successful placement
       const cooldownMs = getClientTier(data.pixel.token_balance || 0).cooldownSeconds * 1000;
@@ -1619,14 +1648,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         const data = await response.json();
         console.log('🔵 Balance response:', data);
         
-        if (response.ok && data.balance !== undefined) {
+        if (data.balance !== undefined) {
           console.log('🔵 Setting new balance:', data.balance);
           setUserProfile(prev => ({
             farcaster_username: prev?.farcaster_username ?? null,
             farcaster_pfp: prev?.farcaster_pfp ?? null,
             token_balance: Number(data.balance),
-            last_active: prev?.last_active,
-            updated_at: prev?.updated_at
+            last_active: prev?.last_active ?? undefined,
+            updated_at: prev?.updated_at ?? undefined
           }));
         }
       } catch (error) {
@@ -1644,6 +1673,42 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       previewPixel: { x: -1, y: -1 }
     }));
   }, [selectedColor]);
+
+  // Add this effect to handle visibility changes
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Re-initialize canvas dimensions
+        if (containerRef.current && canvasRef.current) {
+          const dpr = window.devicePixelRatio || 1;
+          const containerWidth = containerRef.current.offsetWidth;
+          
+          // Reset canvas dimensions
+          canvasRef.current.width = containerWidth * dpr;
+          canvasRef.current.height = containerWidth * dpr;
+          
+          // Reset overlay canvas as well if present
+          if (overlayCanvasRef.current) {
+            overlayCanvasRef.current.width = containerWidth * dpr;
+            overlayCanvasRef.current.height = containerWidth * dpr;
+          }
+          
+          // Update context and scale
+          const ctx = canvasRef.current.getContext('2d');
+          if (ctx) {
+            ctx.scale(dpr, dpr);
+            ctx.imageSmoothingEnabled = false;
+          }
+          
+          // Force redraw
+          needsRender.current = true;
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
 
   return (
     <div 

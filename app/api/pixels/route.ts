@@ -3,7 +3,7 @@ import { redis } from '@/lib/server/redis';
 import { getAccessToken } from '@privy-io/react-auth';
 import { getAdminClient } from '../_lib/supabaseAdmin';
 import { authenticateUser } from '../_lib/authenticateUser';
-import { getFarcasterUser } from '@/lib/farcaster';
+import { getFarcasterUser } from '../../../components/farcaster/api/getFarcasterUser';
 import { getBillboardBalance, getTokensNeededForUsdAmount } from '@/app/api/_lib/subgraphClient';
 import { pusher } from '@/lib/server/pusher';
 import { v4 as uuidv4 } from 'uuid';
@@ -336,7 +336,9 @@ export async function POST(request: Request) {
         [walletAddress]: Date.now().toString()
       }),
       // After adding pixel to Redis and to the queue
-      redis.rpush('supabase:pixels:queue', JSON.stringify(pixelData))
+      redis.rpush('supabase:pixels:queue', JSON.stringify(pixelData)),
+      // Mark that the user's balance changed recently
+      redis.set(`user:${walletAddress}:balance_changed`, "true", {ex: 60})
     ]);
 
     // Trigger queue processing if queue has enough items

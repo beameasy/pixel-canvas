@@ -3,27 +3,30 @@ import { redis } from '@/lib/server/redis';
 import { extractPrivyId } from '@/lib/jose';
 import { getFarcasterUser } from '@/components/farcaster/api/getFarcasterUser';
 import { getBillboardBalance } from '@/app/api/_lib/subgraphClient';
+import { validatePrivyToken } from '@/middleware';
 
 export async function POST(request: Request) {
   try {
     console.log('📝 Check Profile Request received');
     
-    // Get headers from request
-    const walletAddress = request.headers.get('x-wallet-address')?.toLowerCase();
+    // Switch to use x-verified-wallet instead of x-wallet-address
+    const walletAddress = request.headers.get('x-verified-wallet')?.toLowerCase();
     const privyId = request.headers.get('x-privy-id');
     const privyToken = request.headers.get('x-privy-token');
+    
+    // If we're here and we don't have a verified wallet, the middleware didn't validate the wallet
+    if (!walletAddress) {
+      // If we received a normal wallet address but not a verified one, that means validation failed
+      const unverifiedWallet = request.headers.get('x-wallet-address');
+      console.log('❌ No verified wallet address - validation failed', { unverifiedWallet });
+      return NextResponse.json({ error: 'Wallet authentication failed' }, { status: 401 });
+    }
     
     console.log('📝 Check Profile Headers:', { 
       walletAddress, 
       privyId: !!privyId, 
       privyToken: !!privyToken
     });
-    
-    // Check if wallet address was provided
-    if (!walletAddress) {
-      console.log('❌ No wallet address provided');
-      return NextResponse.json({ error: 'Wallet address is required' }, { status: 400 });
-    }
     
     // Get user data from Redis
     const userData = await redis.hget('users', walletAddress);
@@ -84,7 +87,7 @@ export async function POST(request: Request) {
       // Initialize new user with actual on-chain balance
       parsedUserData = {
         wallet_address: walletAddress,
-        token_balance: onChainBalance.toString(), // Use on-chain balance
+        token_balance: onChainBalance.toString(),
         created_at: Date.now().toString()
       };
       
@@ -92,10 +95,13 @@ export async function POST(request: Request) {
       if (privyId) {
         parsedUserData.privy_id = privyId;
       } else if (privyToken) {
-        // Extract Privy ID from token if not provided directly
-        const extractedPrivyId = await extractPrivyId(privyToken);
-        if (extractedPrivyId) {
-          parsedUserData.privy_id = extractedPrivyId;
+        // Replace extractPrivyId with validatePrivyToken
+        const verifiedPrivyId = await validatePrivyToken(privyToken);
+        if (verifiedPrivyId) {
+          parsedUserData.privy_id = verifiedPrivyId;
+        } else {
+          console.log('❌ Invalid Privy token provided during account creation');
+          return NextResponse.json({ error: 'Invalid authentication token' }, { status: 401 });
         }
       }
       
@@ -119,9 +125,12 @@ export async function POST(request: Request) {
       if (privyId && parsedUserData.privy_id !== privyId) {
         parsedUserData.privy_id = privyId;
       } else if (!parsedUserData.privy_id && privyToken) {
-        const extractedPrivyId = await extractPrivyId(privyToken);
-        if (extractedPrivyId) {
-          parsedUserData.privy_id = extractedPrivyId;
+        const verifiedPrivyId = await validatePrivyToken(privyToken);
+        if (verifiedPrivyId) {
+          parsedUserData.privy_id = verifiedPrivyId;
+        } else {
+          console.log('❌ Invalid Privy token provided during Privy ID update');
+          return NextResponse.json({ error: 'Invalid authentication token' }, { status: 401 });
         }
       }
       

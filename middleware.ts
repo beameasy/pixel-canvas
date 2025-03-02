@@ -7,7 +7,6 @@ import { jwtVerify, createRemoteJWKSet } from 'jose'
 const PUBLIC_ROUTES = [
   { path: '/api/pixels', method: 'GET' },
   { path: '/api/canvas', method: 'GET' },
-  { path: '/api/farcaster', method: 'GET' },
   { path: '/api/pixels/history', method: 'GET' },
   { path: '/api/pixels/latest', method: 'GET' },
   { path: '/api/ticker', method: 'GET' }
@@ -23,6 +22,7 @@ const RATE_LIMIT = {
 // Define protected routes that need specific auth
 const PROTECTED_ROUTES = [
   { path: '/api/pixels', method: 'POST' },
+  { path: '/api/farcaster', method: 'GET' },
   { path: '/api/users/check-profile', method: 'POST' },
   { path: '/api/users/balance', method: 'GET' }
 ];
@@ -86,8 +86,25 @@ export async function validatePrivyToken(token: string): Promise<string | null> 
     if (!token) return null;
     
     // Use proper JWT verification
-    const { payload } = await jwtVerify(token, JWKS);
-    return payload.sub as string || null;
+    const { payload, protectedHeader } = await jwtVerify(token, JWKS);
+    
+    // Additional time-based validation
+    const now = Math.floor(Date.now() / 1000);
+    if (!payload.exp || payload.exp < now) {
+      console.log('Token expired', { exp: payload.exp, now });
+      return null;
+    }
+
+    if (!payload.iat || now - payload.iat > 60 * 60 * 24) { // 24 hour max token age
+      console.log('Token too old', { iat: payload.iat, now });
+      return null;
+    }
+    
+    // Add additional validation if needed
+    const sub = payload.sub as string;
+    if (!sub) return null;
+    
+    return sub;
   } catch (error) {
     console.error('Error validating Privy token:', error);
     return null;
@@ -96,6 +113,43 @@ export async function validatePrivyToken(token: string): Promise<string | null> 
 
 export async function middleware(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.next();
+  
+  // Only add security headers to API responses, not HTML pages
+  if (req.nextUrl.pathname.startsWith('/api/')) {
+    // Add security headers to API responses
+    res.headers.set('Content-Type', 'application/json; charset=utf-8');
+    res.headers.set('X-Content-Type-Options', 'nosniff');
+    
+    // Override the response generation
+    const originalJson = NextResponse.json;
+    NextResponse.json = function(body: any, init?: ResponseInit) {
+      // Add anti-hijacking prefix to JSON
+      const safeBody = typeof body === 'object' ? 
+        { ...body, security_prefix: ")]}',\n" } : body;
+      
+      const response = originalJson(safeBody, init);
+      
+      // Add security headers
+      response.headers.set('Content-Type', 'application/json; charset=utf-8');
+      response.headers.set('X-Content-Type-Options', 'nosniff');
+      
+      return response;
+    };
+    
+    // For state-changing operations, ensure CSRF protection
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+      // Check origin header against your domain
+      const origin = req.headers.get('origin');
+      const host = req.headers.get('host');
+      
+      if (!origin || !host || !origin.includes(host)) {
+        return NextResponse.json(
+          { error: 'Cross-origin request rejected' }, 
+          { status: 403 }
+        );
+      }
+    }
+  }
   
   // Get the pathname and method from the request
   const { pathname } = req.nextUrl;
@@ -156,7 +210,7 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     return res;
   }
   
-  // For protected and admin routes, verify authentication
+  // For protected and admin routes, strengthen verification
   if (isProtectedRoute || isAdminRoute) {
     const privyToken = req.headers.get('x-privy-token');
     const walletAddress = req.headers.get('x-wallet-address')?.toLowerCase();
@@ -171,7 +225,18 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ error: 'Unauthorized - Invalid token' }, { status: 401 });
     }
 
-    // Verify wallet ownership in middleware
+    // SPECIAL HANDLING FOR PROFILE CREATION
+    // If this is a check-profile request, allow it to proceed with verified token
+    // but without requiring an existing user profile
+    if (pathname === '/api/users/check-profile' && method === 'POST') {
+      // Add validated data to headers for profile creation
+      res.headers.set('x-privy-id', privyId);
+      res.headers.set('x-verified-wallet', walletAddress);
+      res.headers.set('x-wallet-verified-at', Date.now().toString());
+      return res;
+    }
+
+    // For all other protected routes, require existing user profile
     const userData = await redis.hget('users', walletAddress);
     if (!userData) {
       return NextResponse.json({ error: 'Unauthorized - Wallet not found' }, { status: 401 });
@@ -189,6 +254,8 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     // Add validated data to headers
     res.headers.set('x-privy-id', privyId);
     res.headers.set('x-verified-wallet', walletAddress);
+    // Add timestamp to indicate when verification happened
+    res.headers.set('x-wallet-verified-at', Date.now().toString());
     
     // Check if the wallet is banned (only for pixel placement)
     if (pathname === '/api/pixels' && method === 'POST' && walletAddress) {

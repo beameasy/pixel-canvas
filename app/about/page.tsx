@@ -13,9 +13,13 @@ export default function AboutPage() {
     });
   }, []);
 
-  // Function to format large numbers with "M" suffix
+  // Function to format large numbers with "B" or "M" suffix
   const formatTokenAmount = (amount: number) => {
-    return amount === 0 ? '0' : `${amount / 1_000_000}M`;
+    if (amount === 0) return '0';
+    if (amount >= 1_000_000_000) {
+      return `${(amount / 1_000_000_000).toFixed(2)}B`;
+    }
+    return `${amount / 1_000_000}M`;
   };
   
   return (
