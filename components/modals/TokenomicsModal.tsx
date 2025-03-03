@@ -18,9 +18,13 @@ export default function TokenomicsModal({ isOpen, onClose }: TokenomicsModalProp
     });
   }, []);
 
-  // Function to format large numbers with "M" suffix
+  // Function to format large numbers with "B" or "M" suffix
   const formatTokenAmount = (amount: number) => {
-    return amount === 0 ? '0' : `${amount / 1_000_000}M`;
+    if (amount === 0) return '0';
+    if (amount >= 1_000_000_000) {
+      return `${(amount / 1_000_000_000).toFixed(2)}B`;
+    }
+    return `${amount / 1_000_000}M`;
   };
   
   if (!isOpen) return null;
@@ -75,7 +79,10 @@ export default function TokenomicsModal({ isOpen, onClose }: TokenomicsModalProp
               <div className="bg-slate-800/50 p-4 border border-slate-700 rounded-md text-xs md:text-sm">
                 <p className="text-emerald-300 mb-2">Protection System:</p>
                 <p>
-                  When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you had at placement time</span> can overwrite your pixel.
+                  When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you currently hold</span> can overwrite your pixel.
+                </p>
+                <p className="mt-2">
+                  <span className="text-amber-300">Dynamic Protection:</span> If you buy more tokens, your pixels immediately gain stronger protection. If you sell tokens, your pixels become more vulnerable to being overwritten. This creates a direct relationship between your token holdings and your ability to maintain your artwork on the canvas.
                 </p>
               </div>
               
@@ -94,6 +101,8 @@ export default function TokenomicsModal({ isOpen, onClose }: TokenomicsModalProp
                       // Apply color based on tier name
                       let tierColor = "";
                       switch(tier.name) {
+                        case "Ultimate": tierColor = "text-purple-400 font-bold"; break;
+                        case "Legendary": tierColor = "text-emerald-400"; break;
                         case "Diamond": tierColor = "text-[#FFD700]"; break;
                         case "Platinum": tierColor = "text-[#E5E4E2]"; break;
                         case "Gold": tierColor = "text-[#FFD700]"; break;

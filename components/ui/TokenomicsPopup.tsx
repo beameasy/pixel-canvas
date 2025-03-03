@@ -17,27 +17,6 @@ export default function TokenomicsPopup({ isOpen, onClose }: TokenomicsPopupProp
     });
   }, []);
   
-  // Add global click handler to close popup when clicking anywhere
-  useEffect(() => {
-    if (!isOpen) return;
-    
-    const handleGlobalClick = (e: MouseEvent) => {
-      // Always close the popup on any click when open
-      onClose();
-      
-      // Store in localStorage that the user has seen and closed the popup
-      localStorage.setItem('tokenomicsPopupClosed', 'true');
-    };
-    
-    // Add the global event listener
-    document.addEventListener('click', handleGlobalClick);
-    
-    // Clean up
-    return () => {
-      document.removeEventListener('click', handleGlobalClick);
-    };
-  }, [isOpen, onClose]);
-  
   // Prevent background page from scrolling/zooming when popup is open
   useEffect(() => {
     if (isOpen) {
@@ -76,91 +55,101 @@ export default function TokenomicsPopup({ isOpen, onClose }: TokenomicsPopupProp
   
   return (
     <div 
-      className="fixed top-[120px] inset-x-0 bottom-0 bg-slate-900 flex flex-col z-[90] overflow-y-auto"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm overflow-y-auto"
       ref={popupRef}
+      onClick={(e) => {
+        // Prevent click event from propagating when clicking inside the popup content
+        if (e.target === e.currentTarget) {
+          onClose();
+          localStorage.setItem('tokenomicsPopupClosed', 'true');
+        }
+      }}
     >
       <div 
-        className="w-full max-w-screen-md mx-auto flex-1 overflow-y-auto"
+        className="bg-slate-800 border border-slate-700 rounded-lg max-w-2xl w-full max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()} // Prevent clicks inside the popup from closing it
       >
-        <div className="relative p-4 pt-6">
+        <div className="sticky top-0 bg-slate-900 p-3 flex justify-between items-center border-b border-slate-700">
+          <h1 className="text-[#FFD700] text-lg font-mono">Welcome to Billboard on Base!</h1>
           <button 
             onClick={() => {
               onClose();
               localStorage.setItem('tokenomicsPopupClosed', 'true');
             }}
-            className="absolute top-2 right-2 text-slate-400 hover:text-white"
+            className="text-slate-400 hover:text-white"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
             </svg>
           </button>
+        </div>
           
-          <h1 className="text-[#FFD700] text-xl sm:text-2xl font-mono mb-6 text-center">
-            Welcome to Billboard on Base!
-          </h1>
+        <div className="p-6 space-y-4 text-slate-300 font-mono text-xs sm:text-sm">
+          <p className="mb-2">
+            Holding $BILLBOARD tokens provides benefits for pixel placement:
+          </p>
           
-          <div className="space-y-4 text-slate-300 font-mono text-xs sm:text-sm">
-            <p className="mb-5">
-              Holding $BILLBOARD tokens provides benefits for pixel placement:
+          <div className="bg-slate-800/50 p-3 border border-slate-700 rounded-md mb-4">
+            <p className="text-emerald-300 mb-2">Protection System:</p>
+            <p>
+              When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you currently hold</span> can overwrite your pixel. This helps preserve artwork while still allowing for canvas evolution.
             </p>
+            <p className="mt-2">
+              <span className="text-amber-300">Dynamic Protection:</span> If you buy more tokens, your pixels immediately gain stronger protection. If you sell tokens, your pixels become more vulnerable to being overwritten. This creates a direct relationship between your token holdings and your ability to maintain your artwork on the canvas.
+            </p>
+          </div>
+          
+          <h2 className="text-[#FFD700] text-lg font-mono mb-2 pt-1">$BILLBOARD Token Tiers</h2>
+          
+          {/* Table header with centered text */}
+          <div className="grid grid-cols-3 text-center border-b border-slate-700 py-2">
+            <div className="text-emerald-400 px-1">Tokens</div>
+            <div className="text-emerald-400 px-1">Cooldown</div>
+            <div className="text-emerald-400 px-1">Protection</div>
+          </div>
+          
+          {tiers.map((tier, index) => {
+            // Get the color for the tokens amount based on tier
+            let tierColor = "";
+            switch(tier.name) {
+              case "Ultimate": tierColor = "text-purple-400 font-bold"; break;
+              case "Legendary": tierColor = "text-emerald-400"; break;
+              case "Diamond": tierColor = "text-[#FFD700]"; break;
+              case "Platinum": tierColor = "text-[#E5E4E2]"; break;
+              case "Gold": tierColor = "text-[#FFD700]"; break;
+              case "Silver": tierColor = "text-[#C0C0C0]"; break;
+              case "Bronze": tierColor = "text-[#CD7F32]"; break;
+              case "Legend": tierColor = "text-white"; break;
+              default: tierColor = "text-white";
+            }
             
-            <div className="bg-slate-800/50 p-3 border border-slate-700 rounded-md mb-6">
-              <p className="text-emerald-300 mb-2">Protection System:</p>
-              <p>
-                When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you had at placement time</span> can overwrite your pixel. This helps preserve artwork while still allowing for canvas evolution.
-              </p>
-            </div>
-            
-            <h2 className="text-[#FFD700] text-lg font-mono mb-2 pt-1">$BILLBOARD Token Tiers</h2>
-            
-            {/* Table header with centered text */}
-            <div className="grid grid-cols-3 text-center border-b border-slate-700 py-2">
-              <div className="text-emerald-400 px-1">Tokens</div>
-              <div className="text-emerald-400 px-1">Cooldown</div>
-              <div className="text-emerald-400 px-1">Protection</div>
-            </div>
-            
-            {tiers.map((tier, index) => {
-              // Get the color for the tokens amount based on tier
-              let tierColor = "";
-              switch(tier.name) {
-                case "Diamond": tierColor = "text-[#FFD700]"; break;
-                case "Platinum": tierColor = "text-[#E5E4E2]"; break;
-                case "Gold": tierColor = "text-[#FFD700]"; break;
-                case "Silver": tierColor = "text-[#C0C0C0]"; break;
-                case "Bronze": tierColor = "text-[#CD7F32]"; break;
-                case "Legendary": 
-                case "Legend": tierColor = "text-white"; break;
-                default: tierColor = "text-white";
-              }
-              
-              return (
-                <div 
-                  key={tier.name} 
-                  className={`grid grid-cols-3 text-center py-2 ${
-                    index < tiers.length - 1 ? "border-b border-slate-700/50" : ""
-                  }`}
-                >
-                  <div className={`${tierColor} px-1`}>{formatTokenAmount(tier.minTokens)}</div>
-                  <div className="px-1">{tier.cooldownSeconds}s</div>
-                  <div className="px-1">
-                    {tier.protectionTime > 0 ? `${tier.protectionTime}h` : 'None'}
-                  </div>
-                </div>
-              );
-            })}
-            
-            <div className="flex justify-center mt-8 mb-4">
-              <button
-                onClick={() => {
-                  onClose();
-                  localStorage.setItem('tokenomicsPopupClosed', 'true');
-                }}
-                className="bg-slate-700 hover:bg-slate-600 text-white font-mono text-sm px-8 py-3 rounded-md"
+            return (
+              <div 
+                key={tier.name} 
+                className={`grid grid-cols-3 text-center py-2 ${
+                  index < tiers.length - 1 ? "border-b border-slate-700/50" : ""
+                }`}
               >
-                Close
-              </button>
-            </div>
+                <div className={`${tierColor} px-1`}>{formatTokenAmount(tier.minTokens)}</div>
+                <div className="px-1">{tier.cooldownSeconds}s</div>
+                <div className="px-1">
+                  {tier.protectionTime > 0 ? `${tier.protectionTime}h` : 'None'}
+                </div>
+              </div>
+            );
+          })}
+          
+          <div className="flex justify-center mt-6">
+            <button
+              onClick={() => {
+                onClose();
+                localStorage.setItem('tokenomicsPopupClosed', 'true');
+              }}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-mono text-sm px-6 py-2 rounded-md"
+            >
+              Let's start placing pixels!
+            </button>
           </div>
         </div>
       </div>

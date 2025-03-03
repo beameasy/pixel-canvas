@@ -337,7 +337,6 @@ export async function POST(request: Request) {
       placed_at: isoNow,
       farcaster_username: user?.farcaster_username,
       farcaster_pfp: user?.farcaster_pfp,
-      token_balance: balance,
       version: newVersion  // Add version number for concurrency control
     };
 

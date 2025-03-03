@@ -122,14 +122,15 @@ export async function canOverwritePixel(
   if (isAdmin) return { canOverwrite: true };
 
   try {
-    const [newBalance, existingBalance] = await Promise.all([
+    // Get the current token balances for both users
+    const [newBalance, existingWalletCurrentBalance] = await Promise.all([
       getTokenBalance(newWalletAddress),
       getTokenBalance(existingPixelData.wallet_address)
     ]);
 
     const [newTier, existingTier] = await Promise.all([
       getUserTier(newBalance),
-      getUserTier(existingBalance)
+      getUserTier(existingWalletCurrentBalance)
     ]);
 
     // Check if pixel owner has protection based on their tier
@@ -137,12 +138,12 @@ export async function canOverwritePixel(
     const protectionExpired = pixelAge > (existingTier.protectionTime * 60 * 60 * 1000);
 
     if (!protectionExpired) {
-      // During protection, need equal or higher balance
-      if (newBalance < existingBalance) {
+      // During protection, need higher balance than the CURRENT balance of the pixel owner
+      if (newBalance <= existingWalletCurrentBalance) {
         const hoursLeft = Math.ceil((existingTier.protectionTime * 60 * 60 * 1000 - pixelAge) / (60 * 60 * 1000));
         return {
           canOverwrite: false,
-          message: `This pixel is protected for ${hoursLeft} more hours by a user with ${formatBillboardAmount(existingBalance)} tokens. You need at least ${formatBillboardAmount(existingBalance)} tokens to overwrite it.`
+          message: `This pixel is protected for ${hoursLeft} more hours by a user with ${formatBillboardAmount(existingWalletCurrentBalance)} tokens. You need more than ${formatBillboardAmount(existingWalletCurrentBalance)} tokens to overwrite it.`
         };
       }
     }

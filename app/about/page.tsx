@@ -101,18 +101,21 @@ export default function AboutPage() {
               <div className="bg-slate-800/50 p-4 border border-slate-700 rounded-md text-xs md:text-sm">
                 <p className="text-emerald-300 mb-2">Protection System:</p>
                 <p>
-                  When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you had at placement time</span> can overwrite your pixel. This helps preserve artwork while still allowing for canvas evolution.
+                  When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you currently hold</span> can overwrite your pixel. This helps preserve artwork while still allowing for canvas evolution.
+                </p>
+                <p className="mt-2">
+                  <span className="text-amber-300">Dynamic Protection:</span> If you buy more tokens, your pixels immediately gain stronger protection. If you sell tokens, your pixels become more vulnerable to being overwritten. This creates a direct relationship between your token holdings and your ability to maintain your artwork on the canvas.
                 </p>
               </div>
               
               <div className="overflow-x-auto">
                 <table className="w-full text-xs md:text-sm">
                   <thead>
-                    <tr className="text-left border-b border-slate-700">
-                      <th className="py-2 pr-2 text-emerald-400">Tier</th>
-                      <th className="py-2 pr-2 text-emerald-400">Tokens Required</th>
-                      <th className="py-2 pr-2 text-emerald-400">Cooldown</th>
-                      <th className="py-2 text-emerald-400">Protection</th>
+                    <tr className="text-center border-b border-slate-700">
+                      <th className="py-2 px-2 text-emerald-400">Tier</th>
+                      <th className="py-2 px-2 text-emerald-400">Tokens Required</th>
+                      <th className="py-2 px-2 text-emerald-400">Cooldown</th>
+                      <th className="py-2 px-2 text-emerald-400">Protection</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -120,6 +123,8 @@ export default function AboutPage() {
                       // Apply color based on tier name
                       let tierColor = "";
                       switch(tier.name) {
+                        case "Ultimate": tierColor = "text-purple-400 font-bold"; break;
+                        case "Legendary": tierColor = "text-emerald-400"; break;
                         case "Diamond": tierColor = "text-[#FFD700]"; break;
                         case "Platinum": tierColor = "text-[#E5E4E2]"; break;
                         case "Gold": tierColor = "text-[#FFD700]"; break;
@@ -129,11 +134,11 @@ export default function AboutPage() {
                       }
                       
                       return (
-                        <tr key={tier.name} className={index < tiers.length - 1 ? "border-b border-slate-700/50" : ""}>
-                          <td className={`py-2 pr-2 ${tierColor}`}>{tier.name}</td>
-                          <td className="py-2 pr-2">{formatTokenAmount(tier.minTokens)}</td>
-                          <td className="py-2 pr-2">{tier.cooldownSeconds} seconds</td>
-                          <td className="py-2">
+                        <tr key={tier.name} className={`text-center ${index < tiers.length - 1 ? "border-b border-slate-700/50" : ""}`}>
+                          <td className={`py-2 px-2 ${tierColor}`}>{tier.name}</td>
+                          <td className="py-2 px-2">{formatTokenAmount(tier.minTokens)}</td>
+                          <td className="py-2 px-2">{tier.cooldownSeconds} seconds</td>
+                          <td className="py-2 px-2">
                             {tier.protectionTime > 0 ? `${tier.protectionTime} hours` : 'None'}
                           </td>
                         </tr>

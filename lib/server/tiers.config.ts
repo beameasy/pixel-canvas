@@ -8,9 +8,15 @@ export interface TokenTier {
 // Tiers are checked from top to bottom, first match wins
 export const TIERS: TokenTier[] = [
   { 
+    name: 'Ultimate',
+    minTokens: 2_500_000_000, // 2.5B tokens (new top tier)
+    cooldownSeconds: 2,       // Changed from 1s to 2s
+    protectionTime: 36        // Changed from 48h to 36h
+  },
+  { 
     name: 'Legendary',
-    minTokens: 1_250_000_000, // 1.25B tokens (new top tier)
-    cooldownSeconds: 3,       // Fastest cooldown
+    minTokens: 1_250_000_000, // 1.25B tokens 
+    cooldownSeconds: 4,       // Changed from 3s to 4s
     protectionTime: 24        // Maximum protection
   },
   { 
@@ -41,7 +47,7 @@ export const TIERS: TokenTier[] = [
     name: 'Bronze',
     minTokens: 5_000_000,     // 5M tokens
     cooldownSeconds: 24,      // Decreased from 25 to fit progression
-    protectionTime: 1         // Increased from 0.5 to 1 hour for cleaner progression
+    protectionTime: 3         // Changed from 1h to 3h for smoother progression
   },
   { 
     name: 'Member',

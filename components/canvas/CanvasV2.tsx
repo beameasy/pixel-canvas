@@ -9,11 +9,6 @@ import { debounce } from 'lodash';
 import FlashMessage from '@/components/ui/FlashMessage';
 import { safeFetch } from '@/lib/client/safeJsonFetch';
 import { TIERS, DEFAULT_TIER } from '@/lib/server/tiers.config';
-import anime from 'animejs';
-import { Coords, PixelMetadata, colorToImage, colorToBase64, colorToRgb } from '@/lib/pixels';
-import useCanvasEventHandlers from '@/lib/hooks/useCanvasEventHandlers';
-import { Color, generateKnobMarker, GradientMarker, NormalizedPixelCoords } from '@/lib/client/CanvasFunctions';
-import useRealtimeCanvas from '@/lib/hooks/useRealtimeCanvas';
 
 declare global {
   interface Window {
@@ -56,6 +51,7 @@ type PixelData = {
   farcaster_username?: string | null;
   farcaster_pfp?: string | null;
   placed_at: string;
+  // token_balance is now optional since new pixels won't have it, but legacy ones might still
   token_balance?: number;
   locked_until?: number | null;
   canOverwrite: boolean;
@@ -88,6 +84,14 @@ interface UserProfile {
   token_balance?: number;
   last_active?: string;
   updated_at?: string;
+}
+
+// Add after UserProfile interface, before the Canvas component
+interface CachedUserProfiles {
+  [walletAddress: string]: {
+    profile: UserProfile | null;
+    lastFetched: number;
+  }
 }
 
 const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelect, authenticated, onAuthError, onMousePosChange, touchMode, onTouchModeChange, selectionMode, onClearSelection, profileReady, isBanned }, ref) => {
@@ -185,6 +189,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Add this near other refs
   const lastBalanceFetchTime = useRef<number>(0);
   const BALANCE_FETCH_COOLDOWN = 30000; // 30 seconds in milliseconds
+
+  // Add this state for cached user profiles
+  const [userProfiles, setUserProfiles] = useState<CachedUserProfiles>({});
 
   useEffect(() => {
     const updateCanvasSize = () => {
@@ -875,7 +882,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
   }, [authenticated, profileReady, address, user?.id, getAccessToken, isBanned]);
 
-  // Modify the handlePlacePixel function to use the handlePixelPlacement function which already has the correct authentication and visual feedback
+  // Add this function to ensure we're using the latest balance for tier calculation
+  const getCurrentTier = useCallback(() => {
+    const userBalance = userProfile?.token_balance || 0;
+    return getClientTier(userBalance);
+  }, [userProfile?.token_balance]);
+
+  // Modify the handlePlacePixel function to use getCurrentTier instead of directly using getClientTier
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     if (!authenticated) {
       onAuthError();
@@ -1513,9 +1526,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         };
       });
       
-      // Set cooldown based on user's tier
-      const userBalance = userProfile?.token_balance || 0;
-      const userTier = getClientTier(userBalance);
+      // Set cooldown based on user's current tier
+      const userTier = getCurrentTier();
       const cooldownMs = userTier.cooldownSeconds * 1000;
       const nextTime = Date.now() + cooldownMs;
       
@@ -1654,6 +1666,50 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
+  // Add this function to fetch user profiles
+  const fetchUserProfile = async (walletAddress: string): Promise<UserProfile | null> => {
+    // Check if we have a cached profile that's less than 1 minute old
+    const cachedProfile = userProfiles[walletAddress];
+    const now = Date.now();
+    
+    if (cachedProfile && (now - cachedProfile.lastFetched < 60000)) {
+      return cachedProfile.profile;
+    }
+    
+    try {
+      const response = await fetch(`/api/users/${walletAddress}`);
+      if (!response.ok) {
+        setUserProfiles(prev => ({
+          ...prev,
+          [walletAddress]: { profile: null, lastFetched: now }
+        }));
+        return null;
+      }
+      
+      const data = await response.json();
+      setUserProfiles(prev => ({
+        ...prev,
+        [walletAddress]: { profile: data, lastFetched: now }
+      }));
+      return data;
+    } catch (error) {
+      console.error('Error fetching user profile:', error);
+      setUserProfiles(prev => ({
+        ...prev,
+        [walletAddress]: { profile: null, lastFetched: now }
+      }));
+      return null;
+    }
+  };
+
+  // Find the useEffect that sets the hover data or other appropriate place
+  // Add this effect to fetch the wallet balance when hover data changes
+  useEffect(() => {
+    if (hoverData?.pixel?.wallet_address) {
+      fetchUserProfile(hoverData.pixel.wallet_address);
+    }
+  }, [hoverData?.pixel?.wallet_address]);
+
   return (
     <div 
       ref={containerRef}
@@ -1683,7 +1739,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       )}
       {/* Flash Message - keep within container but increase z-index */}
       {flashMessage && (
-        <div className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50">
+        <div className="fixed left-1/2 top-32 transform -translate-x-1/2 z-50">
           <FlashMessage 
             message={flashMessage} 
             onComplete={() => setFlashMessage(null)} 
@@ -1803,7 +1859,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             </div>
             {/* Tooltip balance */}
             <div className="text-amber-400 mt-0.5">
-              {formatBillboardAmount(hoverData?.pixel?.token_balance ?? 0)} $BILLBOARD
+              {hoverData?.pixel?.wallet_address && userProfiles[hoverData.pixel.wallet_address] ? 
+                `${formatBillboardAmount(userProfiles[hoverData.pixel.wallet_address].profile?.token_balance ?? 0)} $BILLBOARD (current)` : 
+                hoverData?.pixel?.token_balance ? 
+                `${formatBillboardAmount(hoverData.pixel.token_balance)} $BILLBOARD (at placement)` :
+                '0 $BILLBOARD'
+              }
             </div>
             {hoverData?.pixel?.locked_until && Number(hoverData.pixel.locked_until) > Date.now() && (
               <div className="text-yellow-400 mt-0.5">
@@ -1830,9 +1891,18 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         </div>
       )}
       {/* Add status UI */}
-      <div className="absolute top-2 right-2 z-50 bg-neutral-900/90 rounded-lg px-2 py-1 text-xs font-mono flex flex-col items-end gap-0.5">
-        <div className="text-amber-400">
-          {formatBillboardAmount(userProfile?.token_balance || 0)} $BILLBOARD
+      <div className="absolute top-2 right-2 z-50 bg-neutral-900/90 rounded-lg px-3 py-2 text-xs font-mono flex flex-col items-end gap-1">
+        <div className="flex items-center">
+          <div className="text-amber-400 flex-grow">
+            {formatBillboardAmount(userProfile?.token_balance || 0)} $BILLBOARD
+          </div>
+          <button 
+            onClick={() => fetchBalance(true)} 
+            className="ml-2 text-neutral-500 hover:text-neutral-300 transition-colors"
+            title="Refresh token balance"
+          >
+            ↻
+          </button>
         </div>
         <div className={!nextPlacementTime ? 'text-green-400' : 'text-neutral-400'}>
           {!nextPlacementTime 

@@ -47,11 +47,16 @@ export default function Home() {
 
   // Show tokenomics popup after a short delay
   useEffect(() => {
-    const popupTimer = setTimeout(() => {
-      setShowTokenomicsPopup(true);
-    }, 2000); // Show popup after 2 seconds
+    const hasSeenPopup = localStorage.getItem('tokenomicsPopupClosed') === 'true';
     
-    return () => clearTimeout(popupTimer);
+    // Only show the popup if the user hasn't closed it before
+    if (!hasSeenPopup) {
+      const popupTimer = setTimeout(() => {
+        setShowTokenomicsPopup(true);
+      }, 2000); // Show popup after 2 seconds
+      
+      return () => clearTimeout(popupTimer);
+    }
   }, []);
 
   useEffect(() => {
