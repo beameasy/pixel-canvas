@@ -4,6 +4,7 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import Image from 'next/image';
 import { pusherManager } from '@/lib/client/pusherManager';
 import { usePrivy } from '@privy-io/react-auth';
+import FarcasterLogo from '@/components/ui/FarcasterLogo';
 
 interface TopUser {
   wallet_address: string;
@@ -46,20 +47,23 @@ export default function Ticker() {
     >
       <span className="text-gray-400 mr-1">{index + 1}.</span>
       {user.farcaster_pfp && (
-        <Image
-          src={user.farcaster_pfp}
-          alt={user.farcaster_username || user.wallet_address}
-          width={16}
-          height={16}
-          className="rounded-full mr-1"
-        />
+        <span className="inline-flex items-center gap-2">
+          <FarcasterLogo className="text-purple-400" size="sm" />
+          <Image
+            src={user.farcaster_pfp}
+            alt={user.farcaster_username || user.wallet_address}
+            width={16}
+            height={16}
+            className="rounded-full"
+          />
+        </span>
       )}
       {user.farcaster_username ? (
         <a 
           href={`https://warpcast.com/${user.farcaster_username}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="text-purple-400 hover:text-purple-300 transition-colors"
+          className="text-purple-400 hover:text-purple-300 transition-colors ml-1"
         >
           @{user.farcaster_username}
         </a>

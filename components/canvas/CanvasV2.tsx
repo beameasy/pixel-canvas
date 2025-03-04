@@ -9,6 +9,7 @@ import { debounce } from 'lodash';
 import FlashMessage from '@/components/ui/FlashMessage';
 import { safeFetch } from '@/lib/client/safeJsonFetch';
 import { TIERS, DEFAULT_TIER } from '@/lib/server/tiers.config';
+import FarcasterLogo from '@/components/ui/FarcasterLogo';
 
 declare global {
   interface Window {
@@ -1820,12 +1821,17 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           >
             <div className="flex items-center gap-2">
               {hoverData?.pixel?.farcaster_pfp && (
-                <img 
-                  src={hoverData.pixel.farcaster_pfp} 
-                  alt="" 
-                  className="w-4 h-4 rounded-full"
-                  loading="eager"
-                />
+                <>
+                  <FarcasterLogo className="text-purple-400" size="sm" />
+                  <img 
+                    src={hoverData.pixel.farcaster_pfp} 
+                    alt="" 
+                    className="w-4 h-4 rounded-full"
+                    width={16}
+                    height={16}
+                    loading="eager"
+                  />
+                </>
               )}
               <span className="text-purple-400">
                 {hoverData?.pixel?.farcaster_username ? (

@@ -27,7 +27,22 @@ export async function GET(request: Request) {
     // Fetch Farcaster data for the verified wallet
     const farcasterData = await getFarcasterUser(walletAddress);
     
-    return NextResponse.json(farcasterData);
+    // Format the response to match what the hook expects
+    if (farcasterData?.farcaster_username) {
+      return NextResponse.json({
+        success: true,
+        data: {
+          username: farcasterData.farcaster_username,
+          pfpUrl: farcasterData.farcaster_pfp,
+          displayName: farcasterData.display_name
+        }
+      });
+    }
+    
+    return NextResponse.json({
+      success: false,
+      data: null
+    });
   } catch (error) {
     console.error('Error fetching Farcaster data:', error);
     return NextResponse.json({ 

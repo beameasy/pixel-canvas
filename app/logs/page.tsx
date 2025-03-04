@@ -28,19 +28,19 @@ export default function LogsPage() {
       const response = await fetch(`/api/pixels/history?page=${pageNum}&limit=${ITEMS_PER_PAGE}`);
       const data = await response.json();
       
-      // Parse the JSON strings into objects
-      const parsedData = data.map((pixel: string) => 
-        typeof pixel === 'string' ? JSON.parse(pixel) : pixel
-      );
-      
-      if (parsedData.length < ITEMS_PER_PAGE) {
+      if (data.error) {
+        console.error('API error:', data.error);
+        return;
+      }
+
+      if (data.length < ITEMS_PER_PAGE) {
         setHasMore(false);
       }
       
       if (pageNum === 1) {
-        setPlacements(parsedData);
+        setPlacements(data);
       } else {
-        setPlacements(prev => [...prev, ...parsedData]);
+        setPlacements(prev => [...prev, ...data]);
       }
     } catch (error) {
       console.error('Failed to fetch pixel history:', error);
@@ -119,8 +119,8 @@ export default function LogsPage() {
                   
                   <span className="text-emerald-400 text-[10px] sm:text-sm whitespace-nowrap">({placement.x}, {placement.y})</span>
                   
-                  <span className="hidden md:inline text-amber-400">
-                    {formatNumber(placement.token_balance)} $BILLBOARD
+                  <span className="text-amber-400 text-[10px] sm:text-sm whitespace-nowrap">
+                    {placement.token_balance !== undefined && placement.token_balance !== null ? formatNumber(placement.token_balance) : '0'} $BILLBOARD
                   </span>
                   
                   <span className="text-slate-400 whitespace-nowrap">

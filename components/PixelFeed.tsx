@@ -5,6 +5,7 @@ import { pusherManager } from '@/lib/client/pusherManager';
 import { motion, AnimatePresence } from 'framer-motion';
 import Image from 'next/image';
 import { usePrivy } from '@privy-io/react-auth';
+import FarcasterLogo from '@/components/ui/FarcasterLogo';
 
 interface PixelPlacement {
   id: string;
@@ -48,13 +49,16 @@ function PlacementMessage({ placement }: { placement: PixelPlacement }) {
       <LiveTimeAgo date={new Date(placement.placed_at)} />{' '}
       <span className="inline-flex items-center gap-2">
         {placement.farcaster_pfp && (
-          <Image
-            src={placement.farcaster_pfp}
-            alt={placement.farcaster_username || placement.wallet_address}
-            width={16}
-            height={16}
-            className="rounded-full"
-          />
+          <>
+            <FarcasterLogo className="text-purple-400" size="sm" />
+            <Image
+              src={placement.farcaster_pfp}
+              alt={placement.farcaster_username || placement.wallet_address}
+              width={16}
+              height={16}
+              className="rounded-full"
+            />
+          </>
         )}
         <a 
           href={placement.farcaster_username 
