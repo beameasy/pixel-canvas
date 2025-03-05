@@ -1740,7 +1740,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }));
   }, [selectedColor]);
 
-  // Add this effect to handle visibility changes
+  // Update the visibility change handler
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -1765,6 +1765,23 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             ctx.scale(dpr, dpr);
             ctx.imageSmoothingEnabled = false;
           }
+
+          // Force refresh canvas state from server
+          loadCanvasState(true);
+          
+          // Restore view state
+          const scale = containerWidth / (GRID_SIZE * PIXEL_SIZE);
+          const centerX = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
+          const centerY = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
+          
+          setCanvasState(prev => ({
+            ...prev,
+            view: {
+              x: centerX,
+              y: centerY,
+              scale: scale
+            }
+          }));
           
           // Force redraw
           needsRender.current = true;
@@ -1774,7 +1791,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, []);
+  }, [PIXEL_SIZE, loadCanvasState]);
 
   // Add this function to fetch user profiles
   const fetchUserProfile = async (walletAddress: string): Promise<UserProfile | null> => {
