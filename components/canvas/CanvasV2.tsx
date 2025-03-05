@@ -194,6 +194,87 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Add this state for cached user profiles
   const [userProfiles, setUserProfiles] = useState<CachedUserProfiles>({});
 
+  // Add near the top with other state/refs
+  const pixelUpdateQueue = useRef<{x: number, y: number, color: string, wallet_address: string}[]>([]);
+  const isProcessingUpdates = useRef(false);
+
+  // Add this function to process updates using requestAnimationFrame
+  const processPixelUpdates = useCallback(() => {
+    if (pixelUpdateQueue.current.length === 0) {
+      isProcessingUpdates.current = false;
+      return;
+    }
+
+    isProcessingUpdates.current = true;
+    
+    // Process up to 10 updates per frame
+    const updates = pixelUpdateQueue.current.splice(0, 10);
+    
+    setCanvasState(prev => {
+      const newPixels = new Map(prev.pixels);
+      updates.forEach(update => {
+        const key = `${update.x},${update.y}`;
+        const fullPixel: PixelData = {
+          ...update,
+          placed_at: new Date().toISOString(),
+          canOverwrite: false,
+          version: 1
+        };
+        newPixels.set(key, fullPixel);
+      });
+      return {
+        ...prev,
+        pixels: newPixels
+      };
+    });
+
+    // Continue processing if more updates exist
+    if (pixelUpdateQueue.current.length > 0) {
+      requestAnimationFrame(processPixelUpdates);
+    } else {
+      isProcessingUpdates.current = false;
+    }
+  }, []);
+
+  // Update the queuePixelUpdate function to include required fields
+  const queuePixelUpdate = useCallback((pixel: {x: number, y: number, color: string, wallet_address: string}) => {
+    pixelUpdateQueue.current.push(pixel); // Push the original pixel data
+    if (!isProcessingUpdates.current) {
+      requestAnimationFrame(processPixelUpdates);
+    }
+  }, [processPixelUpdates]);
+
+  useEffect(() => {
+    const channel = getCanvasChannel();
+    
+    // Handle connection state
+    channel.bind('pusher:subscription_succeeded', () => {
+      setPusherConnected(true);
+    });
+
+    channel.bind('pusher:subscription_error', () => {
+      console.error('Pusher subscription failed');
+      setPusherConnected(false);
+    });
+
+    // Handle pixel updates
+    channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
+      if (!pusherConnected || !data.pixel.wallet_address) return;
+      queuePixelUpdate({
+        x: data.pixel.x,
+        y: data.pixel.y,
+        color: data.pixel.color,
+        wallet_address: data.pixel.wallet_address
+      });
+    });
+
+    return () => {
+      channel.unbind_all();
+      channel.unsubscribe();
+      setPusherConnected(false);
+    };
+  }, []);
+
   useEffect(() => {
     const updateCanvasSize = () => {
       if (containerRef.current) {
@@ -294,116 +375,66 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Update the loadCanvasState function
   const loadCanvasState = useCallback(async (force = false) => {
-    const now = Date.now();
-    if (!force && now - lastLoadRef.current < LOAD_COOLDOWN) {
-      return;
-    }
-    
-    lastLoadRef.current = now;
-    
     try {
-      const data = await safeFetch('/api/canvas');
+      // Add ETag support and cache control
+      const headers: HeadersInit = {
+        'Cache-Control': force ? 'no-cache, no-store' : 'max-age=30',
+        'Pragma': force ? 'no-cache' : ''
+      };
       
-      setCanvasState(prev => ({
-        ...prev,
-        pixels: new Map(data.map((pixel: any) => [
-          `${pixel.x},${pixel.y}`, 
-          pixel
-        ])),
-        isLoading: false
-      }));
+      const response = await fetch('/api/canvas', { headers });
+      if (!response.ok) throw new Error('Failed to load canvas state');
+      
+      // Only update if we got new data (not a 304)
+      if (response.status !== 304) {
+        const data = await response.json();
+        setCanvasState(prev => ({
+          ...prev,
+          pixels: new Map(data.map((pixel: any) => [
+            `${pixel.x},${pixel.y}`, 
+            pixel
+          ])),
+          isLoading: false
+        }));
+      }
     } catch (error) {
       console.error('Failed to load canvas state:', error);
     }
   }, []);
 
-  // Optimize the initial load effect
+  // Update the initial load effect
   useEffect(() => {
     if (mountedRef.current) return;
     mountedRef.current = true;
 
     const loadInitial = async () => {
       try {
-        const [canvasResponse, profileResponse] = await Promise.all([
-          fetch('/api/canvas'),
-          address ? fetch('/api/users/check-profile', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-wallet-address': address.toLowerCase(),
-              ...(user?.id && { 'x-privy-token': await getAccessToken() })
-            } as HeadersInit,
-            body: JSON.stringify({ 
-              wallet_address: address.toLowerCase(),
-              privy_id: user?.id 
-            })
-          }) : Promise.resolve(null)
-        ]);
-
-        const [canvasData, profileData] = await Promise.all([
-          canvasResponse.json(),
-          profileResponse?.json()
-        ]);
-
-        setCanvasState(prev => ({
-          ...prev,
-          pixels: new Map(canvasData.map((pixel: any) => [
-            `${pixel.x},${pixel.y}`, 
-            pixel
-          ])),
-          isLoading: false
-        }));
-
-        if (profileData) {
-          setUserProfile({
-            farcaster_username: null,
-            farcaster_pfp: null,
-            token_balance: Number(profileData.balance),
-            last_active: undefined,
-            updated_at: undefined
+        // Start listening for real-time updates before loading full state
+        const channel = getCanvasChannel();
+        channel.bind('pusher:subscription_succeeded', () => {
+          setPusherConnected(true);
+        });
+        
+        // Then load the full state
+        await loadCanvasState(true); // Force fresh load on initial render
+        
+        // Handle subsequent real-time updates
+        channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
+          if (!pusherConnected || !data.pixel.wallet_address) return;
+          queuePixelUpdate({
+            x: data.pixel.x,
+            y: data.pixel.y,
+            color: data.pixel.color,
+            wallet_address: data.pixel.wallet_address
           });
-        }
+        });
       } catch (error) {
         console.error('Failed to load initial data:', error);
       }
     };
 
     loadInitial();
-  }, [address, user?.id]);
-
-  // Real-time updates via Pusher
-  useEffect(() => {
-    const channel = getCanvasChannel();
-    
-    // Handle connection state
-    channel.bind('pusher:subscription_succeeded', () => {
-      setPusherConnected(true);
-    });
-
-    channel.bind('pusher:subscription_error', () => {
-      console.error('Pusher subscription failed');
-      setPusherConnected(false);
-    });
-
-    // Handle pixel updates
-    channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
-      if (!pusherConnected) return;
-      setCanvasState(prev => {
-        const newPixels = new Map(prev.pixels);
-        newPixels.set(`${data.pixel.x},${data.pixel.y}`, data.pixel);
-        return {
-          ...prev,
-          pixels: newPixels
-        };
-      });
-    });
-
-    return () => {
-      channel.unbind_all();
-      channel.unsubscribe();
-      setPusherConnected(false);
-    };
-  }, []); // Empty dependency array
+  }, []);
 
   // Single useEffect to handle profile and balance
   useEffect(() => {
@@ -914,7 +945,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   }, [flashMessage]);
 
   // Add these handlers to the Canvas component
-  const handleTouchStart = (e: TouchEvent) => {
+  const handleTouchStart = useCallback((e: TouchEvent) => {
     e.preventDefault();
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -925,14 +956,28 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       const touch2 = e.touches[1];
       const distance = Math.hypot(
         touch2.clientX - touch1.clientX,
-        touch2.clientY - touch2.clientY
+        touch2.clientY - touch1.clientY
       );
+      
+      // Store the midpoint for zooming around the pinch center
+      const midX = (touch1.clientX + touch2.clientX) / 2;
+      const midY = (touch1.clientY + touch2.clientY) / 2;
+      
       setPinchStart(distance);
       setPinchScale(canvasState.view.scale);
+      
+      setInteractionState(prev => ({
+        ...prev,
+        isDragging: false,
+        dragStart: { x: midX, y: midY }
+      }));
     } else if (e.touches.length === 1) {
       const touch = e.touches[0];
-      const x = Math.floor((touch.clientX - rect.left - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
-      const y = Math.floor((touch.clientY - rect.top - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
+      const canvasX = touch.clientX - rect.left;
+      const canvasY = touch.clientY - rect.top;
+      
+      const x = Math.floor((canvasX - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
+      const y = Math.floor((canvasY - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
 
       // Always set up for potential panning
       setInteractionState(prev => ({
@@ -945,20 +990,56 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
       }));
 
-      // In place mode, also set up for potential pixel placement
+      // In place mode, also set up for potential pixel placement if coordinates are valid
       if (touchMode === 'place' && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && address) {
         setInteractionState(prev => ({
           ...prev,
           previewPixel: { x, y }
         }));
+      } else {
+        // Ensure invalid coordinates don't get stored
+        setInteractionState(prev => ({
+          ...prev,
+          previewPixel: { x: -1, y: -1 }
+        }));
       }
     }
-  };
+  }, [address, touchMode, canvasState.view.x, canvasState.view.y, PIXEL_SIZE, canvasState.view.scale]);
 
-  const handleTouchMove = (e: TouchEvent) => {
+  const handleTouchMove = useCallback((e: TouchEvent) => {
     e.preventDefault();
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return;
     
-    if (interactionState.isDragging && e.touches.length === 1) {
+    if (e.touches.length === 2) {
+      // Handle pinch zoom
+      const touch1 = e.touches[0];
+      const touch2 = e.touches[1];
+      const distance = Math.hypot(
+        touch2.clientX - touch1.clientX,
+        touch2.clientY - touch1.clientY
+      );
+      
+      if (pinchStart > 0) {
+        const midX = (touch1.clientX + touch2.clientX) / 2 - rect.left;
+        const midY = (touch1.clientY + touch2.clientY) / 2 - rect.top;
+        
+        const scale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, pinchScale * (distance / pinchStart)));
+        
+        setCanvasState(prev => {
+          const scaleChange = scale / prev.view.scale;
+          return {
+            ...prev,
+            view: {
+              scale: scale,
+              x: midX - (midX - prev.view.x) * scaleChange,
+              y: midY - (midY - prev.view.y) * scaleChange
+            }
+          };
+        });
+      }
+    } else if (interactionState.isDragging && e.touches.length === 1) {
+      // Handle panning
       const touch = e.touches[0];
       const dx = touch.clientX - interactionState.dragStart.x;
       const dy = touch.clientY - interactionState.dragStart.y;
@@ -971,20 +1052,48 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           y: interactionState.dragStartPos.y + dy
         }
       }));
+      
+      // Clear preview pixel if we've dragged more than a few pixels
+      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+        setInteractionState(prev => ({
+          ...prev,
+          previewPixel: { x: -1, y: -1 }
+        }));
+      }
     }
-  };
+  }, [interactionState.isDragging, interactionState.dragStart, interactionState.dragStartPos, pinchStart, pinchScale]);
 
-  const handleTouchEnd = (e: TouchEvent) => {
-    if (interactionState.previewPixel && !interactionState.isDragging) {
-      // Only place pixel if we haven't dragged
-      handlePlacePixel(interactionState.previewPixel.x, interactionState.previewPixel.y, selectedColor);
+  const handleTouchEnd = useCallback((e: TouchEvent) => {
+    e.preventDefault();
+    
+    // Only attempt to place a pixel if:
+    // 1. We have a preview pixel with valid coordinates
+    // 2. We haven't dragged significantly
+    // 3. We're ending a single touch (not a pinch)
+    if (
+      interactionState.previewPixel.x >= 0 && 
+      interactionState.previewPixel.x < GRID_SIZE &&
+      interactionState.previewPixel.y >= 0 && 
+      interactionState.previewPixel.y < GRID_SIZE &&
+      !interactionState.isDragging &&
+      e.touches.length === 0 && 
+      e.changedTouches.length === 1
+    ) {
+      handlePlacePixel(
+        interactionState.previewPixel.x,
+        interactionState.previewPixel.y,
+        selectedColor
+      );
     }
+    
+    // Reset interaction state
     setInteractionState(prev => ({
       ...prev,
-      isDragging: false
+      isDragging: false,
+      previewPixel: { x: -1, y: -1 }
     }));
     setPinchStart(0);
-  };
+  }, [interactionState.previewPixel, interactionState.isDragging, selectedColor, handlePlacePixel]);
 
   // Add this helper function
   const hexToDecimal = (hex: string) => {
@@ -1733,7 +1842,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       {isSmallScreen && (
         <button
           onClick={toggleTouchMode}
-          className="absolute top-2 right-2 z-50 bg-neutral-900/90 text-white px-2 py-1 rounded-full text-xs font-mono"
+          className="absolute top-2 left-2 z-50 bg-neutral-900/90 text-white px-2 py-1 rounded-full text-xs font-mono"
         >
           {touchMode === 'view' ? '👆' : '👁️'}
         </button>
@@ -1896,24 +2005,26 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           />
         </div>
       )}
-      {/* Add status UI */}
-      <div className="absolute top-2 right-2 z-50 bg-neutral-900/90 rounded-lg px-3 py-2 text-xs font-mono flex flex-col items-end gap-1">
+      {/* Status UI - more compact on mobile */}
+      <div className="absolute top-2 right-2 z-50 bg-neutral-900/90 rounded-lg px-2 py-1 text-xs font-mono flex flex-col items-end gap-0.5">
         <div className="flex items-center">
-          <div className="text-amber-400 flex-grow">
-            {formatBillboardAmount(userProfile?.token_balance || 0)} $BILLBOARD
+          <div className="text-amber-400 flex-grow whitespace-nowrap">
+            {formatBillboardAmount(userProfile?.token_balance || 0)}{isSmallScreen ? ' BB' : ' $BILLBOARD'}
           </div>
           <button 
             onClick={() => fetchBalance(true)} 
-            className="ml-2 text-neutral-500 hover:text-neutral-300 transition-colors"
+            className="ml-1.5 text-neutral-500 hover:text-neutral-300 transition-colors"
             title="Refresh token balance"
           >
             ↻
           </button>
         </div>
-        <div className={!nextPlacementTime ? 'text-green-400' : 'text-neutral-400'}>
+        <div className={`${!nextPlacementTime ? 'text-green-400' : 'text-neutral-400'} text-[10px] leading-tight`}>
           {!nextPlacementTime 
-            ? 'Ready to place!' 
-            : `Next Pixel: ${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`}
+            ? (isSmallScreen ? 'Ready!' : 'Ready to place!') 
+            : isSmallScreen 
+              ? `${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`
+              : `Next Pixel: ${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`}
         </div>
       </div>
     </div>

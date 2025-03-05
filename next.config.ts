@@ -26,7 +26,11 @@ const nextConfig: NextConfig = {
     return config;
   },
   experimental: {
-    turbo: true, // Enable Turbopack
+    turbo: {
+      rules: {
+        // You can optionally add specific rules here
+      }
+    }
   },
 };
 

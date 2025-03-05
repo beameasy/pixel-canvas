@@ -117,8 +117,27 @@ async function getPixelMetadata(x: number, y: number): Promise<PixelMetadata | n
   const data = await redis.hget('canvas:pixels:metadata', key);
   if (!data) return null;
   
-  // If it's a string, parse it, otherwise return as is
-  return typeof data === 'string' ? JSON.parse(data) : data;
+  // Parse the data and ensure it matches the PixelMetadata interface
+  const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+  
+  // Validate that the parsed data has all required fields
+  if (
+    typeof parsed.wallet_address === 'string' &&
+    typeof parsed.token_balance === 'number' &&
+    typeof parsed.placed_at === 'number' &&
+    typeof parsed.version === 'number'
+  ) {
+    return {
+      wallet_address: parsed.wallet_address,
+      token_balance: parsed.token_balance,
+      placed_at: parsed.placed_at,
+      version: parsed.version,
+      locked_until: parsed.locked_until
+    };
+  }
+  
+  // If validation fails, return null
+  return null;
 }
 
 async function setPixelMetadata(x: number, y: number, metadata: PixelMetadata): Promise<void> {
@@ -364,6 +383,14 @@ export async function POST(request: Request) {
     // Execute all operations atomically
     await multi.exec();
 
+    // Add logging for queue state
+    console.log('🔄 Queue state after pixel placement:', {
+      queueLength: await redis.llen('supabase:pixels:queue'),
+      processingActive: await redis.get('queue_processing_active'),
+      appUrl: process.env.NEXT_PUBLIC_APP_URL,
+      hasCronSecret: !!process.env.CRON_SECRET
+    });
+
     // Trigger queue processing if queue has enough items
     const queueLength = await redis.llen('supabase:pixels:queue');
     if (queueLength >= 10) { // Process in batches of 50 or more
@@ -373,19 +400,40 @@ export async function POST(request: Request) {
         // Set processing flag with 5 minute expiry
         await redis.set('queue_processing_active', '1', {ex: 300});
         
+        // Add logging before triggering queue processing
+        console.log('🔄 Attempting to trigger queue processing:', {
+          queueLength,
+          appUrl: process.env.NEXT_PUBLIC_APP_URL,
+          hasCronSecret: !!process.env.CRON_SECRET
+        });
+        
         // Trigger processing in background
         if (process.env.NEXT_PUBLIC_APP_URL && process.env.CRON_SECRET) {
-          fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
-            method: 'POST',
-            headers: { 
-              'x-cron-secret': process.env.CRON_SECRET,
-              'origin': process.env.NEXT_PUBLIC_APP_URL 
+          try {
+            const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
+              method: 'POST',
+              headers: { 
+                'x-cron-secret': process.env.CRON_SECRET,
+                'origin': process.env.NEXT_PUBLIC_APP_URL 
+              }
+            });
+            
+            if (!response.ok) {
+              console.error('❌ Queue processing trigger failed:', await response.text());
+            } else {
+              console.log('✅ Queue processing triggered successfully');
             }
-          }).catch(error => {
-            console.error('Failed to trigger queue processing:', error);
-          });
+          } catch (error) {
+            console.error('❌ Failed to trigger queue processing:', error);
+          }
+        } else {
+          console.warn('⚠️ Missing required env vars for queue processing');
         }
+      } else {
+        console.log('ℹ️ Queue processing already active');
       }
+    } else {
+      console.log(`ℹ️ Queue length (${queueLength}) below threshold (10)`);
     }
 
     // Get recent history for top users calculation - using zrange for sorted set

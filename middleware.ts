@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { redis } from '@/lib/server/redis'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
+import { z } from 'zod'
 
 // Define public routes that don't need auth
 const PUBLIC_ROUTES = [
@@ -24,7 +25,8 @@ const PROTECTED_ROUTES = [
   { path: '/api/pixels', method: 'POST' },
   { path: '/api/farcaster', method: 'GET' },
   { path: '/api/users/check-profile', method: 'POST' },
-  { path: '/api/users/balance', method: 'GET' }
+  { path: '/api/users/balance', method: 'GET' },
+  { path: '/api/users/[address]', method: 'GET' }
 ];
 
 // Define admin-only routes
@@ -111,8 +113,43 @@ export async function validatePrivyToken(token: string): Promise<string | null> 
   }
 }
 
+// Add validation schemas
+const PixelPlacementSchema = z.object({
+  x: z.number().int().min(0).max(399),
+  y: z.number().int().min(0).max(399),
+  color: z.string().regex(/^#[0-9A-Fa-f]{6}$/),
+  version: z.number().optional()
+});
+
+const UserProfileSchema = z.object({
+  wallet_address: z.string().regex(/^0x[a-fA-F0-9]{40}$/),
+  privy_id: z.string()
+});
+
+// Add before middleware function
+async function validateRequestBody(req: Request, schema: z.ZodSchema) {
+  try {
+    const contentType = req.headers.get('content-type');
+    if (!contentType?.includes('application/json')) {
+      throw new Error('Content-Type must be application/json');
+    }
+
+    const body = await req.json();
+    return schema.parse(body);
+  } catch (error) {
+    console.error('Request validation error:', error);
+    return null;
+  }
+}
+
 export async function middleware(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.next();
+  
+  // Add size limit check
+  const contentLength = parseInt(req.headers.get('content-length') || '0');
+  if (contentLength > 10000) { // 10KB limit
+    return NextResponse.json({ error: 'Request too large' }, { status: 413 });
+  }
   
   // Only add security headers to API responses, not HTML pages
   if (req.nextUrl.pathname.startsWith('/api/')) {
@@ -280,6 +317,31 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
       if (!walletAddress || !isAdminWallet(walletAddress)) {
         return NextResponse.json({ error: 'Unauthorized - Admin access required' }, { status: 403 });
       }
+    }
+  }
+
+  // Add JSON validation for specific routes
+  if (pathname === '/api/pixels' && method === 'POST') {
+    const reqClone = new Request(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: req.body
+    });
+    const validatedBody = await validateRequestBody(reqClone, PixelPlacementSchema);
+    if (!validatedBody) {
+      return NextResponse.json({ error: 'Invalid pixel placement data' }, { status: 400 });
+    }
+  }
+
+  if (pathname === '/api/users/check-profile' && method === 'POST') {
+    const reqClone = new Request(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: req.body
+    });
+    const validatedBody = await validateRequestBody(reqClone, UserProfileSchema);
+    if (!validatedBody) {
+      return NextResponse.json({ error: 'Invalid user profile data' }, { status: 400 });
     }
   }
 

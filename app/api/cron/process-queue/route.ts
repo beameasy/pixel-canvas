@@ -123,7 +123,11 @@ export async function GET(request: Request) {
   // Add security check
   const secret = request.headers.get('x-cron-secret');
   if (secret !== process.env.CRON_SECRET) {
-    console.log('❌ Unauthorized queue processing attempt');
+    console.error('❌ Queue processing unauthorized:', {
+      providedSecret: secret?.slice(0, 4),
+      hasEnvSecret: !!process.env.CRON_SECRET,
+      headers: Object.fromEntries(request.headers)
+    });
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -135,6 +139,14 @@ export async function GET(request: Request) {
   try {
     const supabase = getAdminClient();
     
+    // Log initial queue state
+    const initialState = {
+      pixelsQueueLength: await redis.llen('supabase:pixels:queue'),
+      usersQueueLength: await redis.llen('supabase:users:queue'),
+      processingActive: await redis.get('queue_processing_active')
+    };
+    console.log('📊 Initial queue state:', initialState);
+
     // STEP 1: Process users queue FIRST
     console.log('🔄 Processing users queue FIRST...');
     const users = await redis.lrange('supabase:users:queue', 0, -1) || [];

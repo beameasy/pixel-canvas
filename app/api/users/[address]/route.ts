@@ -1,18 +1,18 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { redis } from '@/lib/server/redis';
 import { getBillboardBalance } from '@/app/api/_lib/subgraphClient';
 
 // This endpoint returns the user profile for a given wallet address
 // It's used by the canvas to display token balances in the tooltip
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: { address: string } }
 ) {
   try {
     const walletAddress = params.address.toLowerCase();
     
     // Check if forcing refresh (useful for debugging or manual refresh)
-    const forceRefresh = request.url.includes('?refresh=true');
+    const forceRefresh = request.nextUrl.searchParams.has('refresh');
     const balanceChanged = await redis.exists(`user:${walletAddress}:balance_changed`);
     
     // If forcing refresh or balance changed flag is set, get fresh data
