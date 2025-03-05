@@ -244,20 +244,44 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
   }, [processPixelUpdates]);
 
+  // Initial canvas setup and state loading
   useEffect(() => {
-    const channel = getCanvasChannel();
+    const canvas = canvasRef.current;
+    if (!canvas || !containerRef.current) return;
+
+    // Initialize canvas dimensions
+    const dpr = window.devicePixelRatio || 1;
+    const containerWidth = containerRef.current.offsetWidth;
     
-    // Handle connection state
+    // Set physical dimensions
+    canvas.width = containerWidth * dpr;
+    canvas.height = containerWidth * dpr;
+    
+    // Set CSS dimensions
+    canvas.style.width = `${containerWidth}px`;
+    canvas.style.height = `${containerWidth}px`;
+
+      // Scale context
+    const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.scale(dpr, dpr);
+        ctx.imageSmoothingEnabled = false;
+      }
+
+    // Start Pusher subscription first
+    const channel = getCanvasChannel();
     channel.bind('pusher:subscription_succeeded', () => {
       setPusherConnected(true);
+      
+      // Load initial state with CDN caching after Pusher is ready
+      loadCanvasState(true).then(() => {
+        // Start RAF loop after initial state is loaded
+        needsRender.current = true;
+        rafRef.current = requestAnimationFrame(animate);
+      });
     });
 
-    channel.bind('pusher:subscription_error', () => {
-      console.error('Pusher subscription failed');
-      setPusherConnected(false);
-    });
-
-    // Handle pixel updates
+    // Handle real-time updates through RAF queue
     channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
       if (!pusherConnected || !data.pixel.wallet_address) return;
       queuePixelUpdate({
@@ -268,11 +292,41 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       });
     });
 
+    // Cleanup
     return () => {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+      }
       channel.unbind_all();
       channel.unsubscribe();
-      setPusherConnected(false);
     };
+  }, []); // Empty dependency array for single initialization
+
+  // Keep the loadCanvasState function with CDN caching
+  const loadCanvasState = useCallback(async (force = false) => {
+    try {
+      const headers: HeadersInit = {
+        'Cache-Control': force ? 'no-cache, no-store' : 'max-age=30',
+        'Pragma': force ? 'no-cache' : ''
+      };
+      
+      const response = await fetch('/api/canvas', { headers });
+      if (!response.ok) throw new Error('Failed to load canvas state');
+      
+      if (response.status !== 304) {
+        const data = await response.json();
+        setCanvasState(prev => ({
+          ...prev,
+          pixels: new Map(data.map((pixel: any) => [
+            `${pixel.x},${pixel.y}`, 
+            pixel
+          ])),
+          isLoading: false
+        }));
+      }
+    } catch (error) {
+      console.error('Failed to load canvas state:', error);
+    }
   }, []);
 
   useEffect(() => {
@@ -372,35 +426,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     ctx.restore();
   }, [canvasState.view, PIXEL_SIZE]);
-
-  // Update the loadCanvasState function
-  const loadCanvasState = useCallback(async (force = false) => {
-    try {
-      // Add ETag support and cache control
-      const headers: HeadersInit = {
-        'Cache-Control': force ? 'no-cache, no-store' : 'max-age=30',
-        'Pragma': force ? 'no-cache' : ''
-      };
-      
-      const response = await fetch('/api/canvas', { headers });
-      if (!response.ok) throw new Error('Failed to load canvas state');
-      
-      // Only update if we got new data (not a 304)
-      if (response.status !== 304) {
-        const data = await response.json();
-        setCanvasState(prev => ({
-          ...prev,
-          pixels: new Map(data.map((pixel: any) => [
-            `${pixel.x},${pixel.y}`, 
-            pixel
-          ])),
-          isLoading: false
-        }));
-      }
-    } catch (error) {
-      console.error('Failed to load canvas state:', error);
-    }
-  }, []);
 
   // Update the initial load effect
   useEffect(() => {
@@ -521,6 +546,17 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     
     const centerX = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
     const centerY = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
+    
+    // Clear preview pixel when resetting view
+    drawPreviewPixel(-1, -1);
+    setHoverData(null);
+    onMousePosChange?.(null);
+    
+    // Also clear in interaction state
+    setInteractionState(prev => ({
+      ...prev,
+      previewPixel: { x: -1, y: -1 }
+    }));
     
     setCanvasState(prev => ({
       ...prev,
@@ -765,19 +801,24 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Optimize render function with useMemo
   const render = useMemo(() => {
-    if (!canvasRef.current || !needsRender.current) return;
+    const canvas = canvasRef.current;
+    if (!canvas || !needsRender.current) return;
     
     return () => {
-      const ctx = canvasRef.current?.getContext('2d');
+      const ctx = canvas.getContext('2d');
       if (!ctx) return;
+
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.width / dpr;
+      const height = canvas.height / dpr;
 
       ctx.save();
       
-      // First fill entire canvas with dark background
-      ctx.fillStyle = '#1F1F1F'; // Dark gray background
-      ctx.fillRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
+      // Clear the entire canvas first
+      ctx.fillStyle = '#1F1F1F';
+      ctx.fillRect(0, 0, width, height);
 
-      // Draw white background only for the pixel grid area
+      // Draw white background for grid area
       const gridPixelWidth = GRID_SIZE * PIXEL_SIZE * canvasState.view.scale;
       const gridPixelHeight = GRID_SIZE * PIXEL_SIZE * canvasState.view.scale;
       ctx.fillStyle = '#FFFFFF';
@@ -788,7 +829,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         gridPixelHeight
       );
 
-      // Draw all pixels
+      // Draw pixels
       canvasState.pixels.forEach((pixel, key) => {
         const [x, y] = key.split(',').map(Number);
         ctx.fillStyle = pixel.color;
@@ -800,7 +841,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         );
       });
 
-      // Always draw grid when zoomed in
+      // Draw grid if zoomed in
       if (canvasState.view.scale > 4) {
         ctx.strokeStyle = '#CCCCCC';
         ctx.lineWidth = 0.5;
@@ -829,6 +870,15 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add RAF loop
   const animate = useCallback(() => {
+    // Add safety check to prevent rendering if unmounting
+    if (!canvasRef.current) {
+      if (rafRef.current) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+      }
+      return;
+    }
+    
     if (render) render();
     rafRef.current = requestAnimationFrame(animate);
   }, [render]);
@@ -836,10 +886,16 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Start RAF immediately on mount
   useEffect(() => {
     rafRef.current = requestAnimationFrame(animate);
+    
     return () => {
+      // Ensure animation frame is cancelled when unmounting
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
       }
+      
+      // Clear any pending renders
+      needsRender.current = false;
     };
   }, [animate]);
 
@@ -1021,6 +1077,16 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       );
       
       if (pinchStart > 0) {
+        // Clear the preview pixel during pinch zoom
+        drawPreviewPixel(-1, -1);
+        setHoverData(null);
+        
+        // Also clear in interaction state
+        setInteractionState(prev => ({
+          ...prev,
+          previewPixel: { x: -1, y: -1 }
+        }));
+        
         const midX = (touch1.clientX + touch2.clientX) / 2 - rect.left;
         const midY = (touch1.clientY + touch2.clientY) / 2 - rect.top;
         
@@ -1059,9 +1125,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           ...prev,
           previewPixel: { x: -1, y: -1 }
         }));
+        
+        // Also clear visual preview
+        drawPreviewPixel(-1, -1);
+        setHoverData(null);
       }
     }
-  }, [interactionState.isDragging, interactionState.dragStart, interactionState.dragStartPos, pinchStart, pinchScale]);
+  }, [interactionState.isDragging, interactionState.dragStart, interactionState.dragStartPos, pinchStart, pinchScale, drawPreviewPixel]);
 
   const handleTouchEnd = useCallback((e: TouchEvent) => {
     e.preventDefault();
@@ -1147,20 +1217,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Add zoom handling to clear preview
+  // Fix the handleWheel function
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    
-    // Clear preview pixel during zoom
-    const canvas = overlayCanvasRef.current;
-    const ctx = canvas?.getContext('2d');
-    if (ctx && canvas) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-    setInteractionState(prev => ({
-      ...prev,
-      previewPixel: { x: -1, y: -1 }
-    }));
     
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -1168,21 +1227,39 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
+    // Clear the preview pixel
+    drawPreviewPixel(-1, -1);
+    setHoverData(null);
+    onMousePosChange(null);
+    
+    // Clear the preview pixel in interaction state
+    setInteractionState(prev => ({
+      ...prev,
+      previewPixel: { x: -1, y: -1 }
+    }));
+
     setCanvasState(prev => {
       const delta = e.deltaY;
       const scaleChange = delta > 0 ? 0.9 : 1.1;
       const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, prev.view.scale * scaleChange));
       
+      // Calculate the point to zoom towards (mouse position)
+      const zoomPoint = {
+        x: (mouseX - prev.view.x) / prev.view.scale,
+        y: (mouseY - prev.view.y) / prev.view.scale
+      };
+
+      // Calculate new position that keeps the zoom point stationary
       return {
         ...prev,
         view: {
           scale: newScale,
-          x: mouseX - (mouseX - prev.view.x) * (newScale / prev.view.scale),
-          y: mouseY - (mouseY - prev.view.y) * (newScale / prev.view.scale)
+          x: mouseX - zoomPoint.x * newScale,
+          y: mouseY - zoomPoint.y * newScale
         }
       };
     });
-  }, []);
+  }, [drawPreviewPixel, onMousePosChange]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1660,31 +1737,73 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     return true;
   };
 
-  // Add initialization for overlay canvas
+  // Update the canvas initialization effect
   useEffect(() => {
     if (!canvasRef.current || !containerRef.current) return;
 
-    // Get DPR for retina displays
-    const dpr = window.devicePixelRatio || 1;
-    
-    // Set canvas size based on container
-    const containerWidth = containerRef.current.offsetWidth;
-    canvasRef.current.width = containerWidth * dpr;
-    canvasRef.current.height = containerWidth * dpr;
-    
-    // Set display size
-    canvasRef.current.style.width = `${containerWidth}px`;
-    canvasRef.current.style.height = `${containerWidth}px`;
+    const initializeCanvas = () => {
+      // First check if canvasRef.current and containerRef.current exist
+      if (!canvasRef.current || !containerRef.current) return;
+      
+      const dpr = window.devicePixelRatio || 1;
+      const containerWidth = containerRef.current.offsetWidth || 600;
+      
+      // Now it's safe to access canvasRef.current since we've checked it's not null
+      canvasRef.current.width = containerWidth * dpr;
+      canvasRef.current.height = containerWidth * dpr;
+      
+      // Set CSS size
+      canvasRef.current.style.width = `${containerWidth}px`;
+      canvasRef.current.style.height = `${containerWidth}px`;
 
-    // Enable pixel-perfect rendering
-    const ctx = canvasRef.current.getContext('2d');
-    if (ctx) {
-      ctx.scale(dpr, dpr);
-      ctx.imageSmoothingEnabled = false;
+      // Scale context
+      const ctx = canvasRef.current.getContext('2d');
+      if (ctx) {
+        ctx.scale(dpr, dpr);
+        ctx.imageSmoothingEnabled = false;
+      }
+
+      // Also initialize overlay canvas - check for null before using
+      if (overlayCanvasRef.current) {
+        overlayCanvasRef.current.width = containerWidth * dpr;
+        overlayCanvasRef.current.height = containerWidth * dpr;
+        overlayCanvasRef.current.style.width = `${containerWidth}px`;
+        overlayCanvasRef.current.style.height = `${containerWidth}px`;
+        
+        const overlayCtx = overlayCanvasRef.current.getContext('2d');
+        if (overlayCtx) {
+          overlayCtx.scale(dpr, dpr);
+          overlayCtx.imageSmoothingEnabled = false;
+        }
+      }
+
+      // Force a redraw
+      needsRender.current = true;
+    };
+
+    // Initialize immediately
+    initializeCanvas();
+
+    // Also initialize after a short delay to handle any layout shifts
+    const timer = setTimeout(initializeCanvas, 100);
+
+    // Add resize observer to handle container size changes
+    const resizeObserver = new ResizeObserver(() => {
+      // Only call initializeCanvas if component is still mounted
+      if (canvasRef.current && containerRef.current) {
+        initializeCanvas();
+      }
+    });
+    
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
     }
 
-    needsRender.current = true;
-  }, [containerRef.current, canvasRef.current]);
+    return () => {
+      clearTimeout(timer);
+      resizeObserver.disconnect();
+    };
+  }, []);
 
   // Add this effect to update the cooldown timer
   useEffect(() => {
@@ -1744,48 +1863,48 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        // Re-initialize canvas dimensions
-        if (containerRef.current && canvasRef.current) {
-          const dpr = window.devicePixelRatio || 1;
-          const containerWidth = containerRef.current.offsetWidth;
-          
-          // Reset canvas dimensions
-          canvasRef.current.width = containerWidth * dpr;
-          canvasRef.current.height = containerWidth * dpr;
-          
-          // Reset overlay canvas as well if present
-          if (overlayCanvasRef.current) {
-            overlayCanvasRef.current.width = containerWidth * dpr;
-            overlayCanvasRef.current.height = containerWidth * dpr;
-          }
-          
-          // Update context and scale
-          const ctx = canvasRef.current.getContext('2d');
-          if (ctx) {
-            ctx.scale(dpr, dpr);
-            ctx.imageSmoothingEnabled = false;
-          }
-
-          // Force refresh canvas state from server
-          loadCanvasState(true);
-          
-          // Restore view state
-          const scale = containerWidth / (GRID_SIZE * PIXEL_SIZE);
-          const centerX = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
-          const centerY = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
-          
-          setCanvasState(prev => ({
-            ...prev,
-            view: {
-              x: centerX,
-              y: centerY,
-              scale: scale
-            }
-          }));
-          
-          // Force redraw
-          needsRender.current = true;
+        // Only proceed if both refs are available
+        if (!containerRef.current || !canvasRef.current) return;
+        
+        const dpr = window.devicePixelRatio || 1;
+        const containerWidth = containerRef.current.offsetWidth;
+        
+        // Now safe to update canvas dimensions
+        canvasRef.current.width = containerWidth * dpr;
+        canvasRef.current.height = containerWidth * dpr;
+        
+        // Reset overlay canvas as well if present
+        if (overlayCanvasRef.current) {
+          overlayCanvasRef.current.width = containerWidth * dpr;
+          overlayCanvasRef.current.height = containerWidth * dpr;
         }
+        
+        // Update context and scale
+        const ctx = canvasRef.current.getContext('2d');
+        if (ctx) {
+          ctx.scale(dpr, dpr);
+          ctx.imageSmoothingEnabled = false;
+        }
+
+        // Force refresh canvas state from server
+        loadCanvasState(true);
+        
+        // Restore view state
+        const scale = containerWidth / (GRID_SIZE * PIXEL_SIZE);
+        const centerX = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
+        const centerY = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
+        
+        setCanvasState(prev => ({
+          ...prev,
+          view: {
+            x: centerX,
+            y: centerY,
+            scale: scale
+          }
+        }));
+        
+        // Force redraw
+        needsRender.current = true;
       }
     };
 

@@ -1,5 +1,8 @@
 import { redis } from '@/lib/server/redis';
 import { NextResponse } from 'next/server';
+import { headers } from 'next/headers';
+
+export const dynamic = 'force-dynamic'; // Still need this to ensure fresh data on server
 
 // NEW separate route for canvas state
 export async function GET(request: Request) {
@@ -9,7 +12,16 @@ export async function GET(request: Request) {
     
     // Get pixels from Redis
     const pixels = await redis.hgetall('canvas:pixels');
-    const pixelsArray = Object.entries(pixels || {}).map(([key, value]) => {
+    if (!pixels) {
+      console.error('No pixels found in Redis');
+      return NextResponse.json([], {
+        headers: {
+          'Cache-Control': 'public, max-age=0, must-revalidate'
+        }
+      });
+    }
+
+    const pixelsArray = Object.entries(pixels).map(([key, value]) => {
       const [x, y] = key.split(',');
       const pixelData = typeof value === 'string' ? JSON.parse(value) : value;
       return {
@@ -20,15 +32,17 @@ export async function GET(request: Request) {
     });
 
     // Generate ETag based on content
-    const etag = `"${now}-${Object.keys(pixels || {}).length}"`;
+    const etag = `"${now}-${Object.keys(pixels).length}"`;
     
     // Check if client has fresh copy
-    const ifNoneMatch = request.headers.get('if-none-match');
+    const headersList = headers();
+    const ifNoneMatch = headersList.get('if-none-match');
+    
     if (ifNoneMatch === etag) {
       return new NextResponse(null, {
         status: 304,
         headers: {
-          'Cache-Control': 'public, max-age=30, stale-while-revalidate=60',
+          'Cache-Control': 'public, max-age=15, stale-while-revalidate=30',
           'ETag': etag
         }
       });
@@ -43,6 +57,7 @@ export async function GET(request: Request) {
   } catch (error) {
     console.error('Error fetching canvas:', error);
     return NextResponse.json([], {
+      status: 500,
       headers: {
         'Cache-Control': 'no-store'
       }
