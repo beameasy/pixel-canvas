@@ -31,11 +31,15 @@ export default function Ticker() {
   const [isConnected, setIsConnected] = useState(false);
   const [contentWidth, setContentWidth] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
+  const [isUpdating, setIsUpdating] = useState(false);
 
   // Measure content width after render for proper animation
   useEffect(() => {
     if (contentRef.current) {
-      setContentWidth(contentRef.current.scrollWidth);
+      // Use requestAnimationFrame to ensure smooth layout updates
+      requestAnimationFrame(() => {
+        setContentWidth(contentRef.current?.scrollWidth || 0);
+      });
     }
   }, [users, activitySpikes]);
 
@@ -243,6 +247,23 @@ export default function Ticker() {
     return () => clearTimeout(timeout);
   }, [activitySpikes]);
 
+  // Update users with a smooth transition
+  useEffect(() => {
+    if (users.length > 0) {
+      setIsUpdating(true);
+      const timer = setTimeout(() => {
+        setIsUpdating(false);
+      }, 300); // Short delay to allow CSS transition to complete
+      return () => clearTimeout(timer);
+    }
+  }, [users]);
+
+  // Update the ticker styles with transitions
+  const tickerStyle = {
+    transition: isUpdating ? 'none' : 'all 0.3s ease-out',
+    opacity: isUpdating ? 0.9 : 1,
+  };
+
   // If we have no data at all, don't render
   if (!users || users.length === 0) {
     return null;
@@ -250,7 +271,7 @@ export default function Ticker() {
 
   return (
     <div className="w-full overflow-hidden text-xs ticker-wrapper">
-      <div className="ticker-track">
+      <div className="ticker-track" style={tickerStyle}>
         {/* Repeating content */}
         {[1, 2, 3].map((_, idx) => (
           <div key={idx} className="ticker-content">
@@ -298,17 +319,16 @@ export default function Ticker() {
           display: flex;
           white-space: nowrap;
           will-change: transform;
-          animation: ticker 30s linear infinite;
-        }
-        
-        .ticker-track:hover {
-          animation-play-state: paused;
+          animation: ticker 20s linear infinite;
+          transform: translateZ(0);
+          backface-visibility: hidden;
         }
         
         .ticker-content {
           display: inline-flex;
           align-items: center;
           flex-shrink: 0;
+          padding-right: 100px;
         }
         
         .ticker-diamond {
@@ -348,13 +368,13 @@ export default function Ticker() {
         
         @media (min-width: 1024px) {
           .ticker-track {
-            animation-duration: 35s;
+            animation-duration: 24s;
           }
         }
         
         @media (min-width: 1536px) {
           .ticker-track {
-            animation-duration: 45s;
+            animation-duration: 28s;
           }
         }
       `}</style>
