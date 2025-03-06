@@ -5,6 +5,10 @@ export interface TokenTier {
   protectionTime: number; // Hours of protection
 }
 
+// Configuration version - increment this whenever you make changes to the tiers
+// This will force the tokenomics popup to show again for all users
+export const CONFIG_VERSION = "1.0.0";
+
 // Tiers are checked from top to bottom, first match wins
 export const TIERS: TokenTier[] = [
   { 

@@ -184,6 +184,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [flashMessage, setFlashMessage] = useState<string | null>(null);
+  const [flashHasLink, setFlashHasLink] = useState(false);
   const { farcasterUser } = useFarcasterUser(address, isBanned);
 
   const [isSmallScreen, setIsSmallScreen] = useState(false);
@@ -776,7 +777,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const minutes = Math.floor(seconds / 60);
     if (minutes < 60) return `${minutes}m`;
     const hours = Math.floor(minutes / 60);
-    if (hours < 24) return `${hours}h`;
+    if (hours < 48) return `${hours}h`; // Show hours for up to 47 hours (47h)
     const days = Math.floor(hours / 24);
     return `${days}d`;
   };
@@ -1147,11 +1148,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const handlePlacePixel = async (x: number, y: number, color: string) => {
     if (!authenticated) {
       onAuthError();
+      clearPreviewPixel();
       return;
     }
     
     if (!profileReady) {
       console.warn("Profile not ready, cannot place pixel yet");
+      clearPreviewPixel();
       return;
     }
     
@@ -1548,6 +1551,20 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Clear tooltip when touch ends
     setHoverData(null);
     
+    // Check if user tried to place a pixel but is not authenticated
+    if (
+      touchMode === 'place' && 
+      interactionState.previewPixel.x >= 0 && 
+      interactionState.previewPixel.x < GRID_SIZE &&
+      interactionState.previewPixel.y >= 0 && 
+      interactionState.previewPixel.y < GRID_SIZE &&
+      !interactionState.isDragging &&
+      !authenticated
+    ) {
+      onAuthError();
+      clearPreviewPixel();
+    }
+    
     setInteractionState(prev => ({
       ...prev,
       isDragging: false
@@ -1793,13 +1810,23 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
   }, []);
 
-  // For pixel placement, consolidate logs
+  // Add a helper function to clear the preview pixel
+  const clearPreviewPixel = useCallback(() => {
+    setInteractionState(prev => ({
+      ...prev,
+      previewPixel: { x: -1, y: -1 }
+    }));
+    drawPreviewPixel(-1, -1);
+  }, [drawPreviewPixel]);
+
+  // Update handlePixelPlacement to use clearPreviewPixel
   const handlePixelPlacement = async (x: number, y: number, color: string) => {
     try {
       // Check if the wallet is banned before proceeding
       if (isBanned) {
         console.log('🚫 Cannot place pixel: Wallet is banned');
         setFlashMessage('Your wallet has been banned from placing pixels');
+        clearPreviewPixel(); // Clear preview when banned
         return false;
       }
       
@@ -1872,18 +1899,54 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             pixels: newPixels
           };
         });
+
+        // Clear the preview pixel when placement fails
+        clearPreviewPixel();
         
         // Special handling for version conflicts
         if (response.status === 409 && error.currentVersion) {
           // If we have a version conflict, fetch the latest canvas state
           console.log('🔄 Version conflict detected, refreshing canvas state');
           setFlashMessage('Pixel was modified by someone else. Canvas refreshed.');
+          setFlashHasLink(false);
           loadCanvasState(true); // Force refresh the canvas state
         } else if (response.status === 403 && error.banned) {
           // Specific handling for banned wallets
           console.log('🚫 Received ban response from server');
           setFlashMessage(error.error || 'Your wallet has been banned from placing pixels');
+          setFlashHasLink(false);
           // No need to update isBanned state here as it's already managed by the hook
+        } else if (response.status === 403) {
+          // This is likely a pixel protection message with a link
+          console.log('🔒 Cannot overwrite pixel:', error.error);
+          
+          // Add better instructions for acquiring tokens
+          let message = error.error || 'Cannot overwrite this pixel';
+          if (message.includes('need') && message.includes('tokens')) {
+            // Extract the token amount needed
+            let tokenAmount = "";
+            const match = message.match(/need\s+(\d+(\.\d+)?[BMK]?)\s+tokens/i);
+            if (match && match[1]) {
+              tokenAmount = match[1];
+            }
+            
+            // Create a more user-friendly message with clear instructions
+            message = message.replace(
+              /need\s+(\d+(\.\d+)?[BMK]?)\s+tokens/i, 
+              `need ${tokenAmount} tokens. Click here or press 'C' to acquire tokens`
+            );
+          }
+          
+          setFlashMessage(message);
+          setFlashHasLink(true); // Always enable clickable messages for token-related errors
+          
+          // When showing a token related error, make the message clickable
+          if (message.includes('tokens') && message.includes('Click here')) {
+            // Setup to handle clicks on the message
+            flashLinkAction.current = openTokenPurchasePage;
+          } else {
+            flashLinkAction.current = null;
+          }
         } else {
           throw new Error(error.error || 'Failed to place pixel');
         }
@@ -1930,6 +1993,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     } catch (error) {
       console.error('Failed to place pixel:', error);
       setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
+      clearPreviewPixel(); // Clear preview on any error
       return false;
     }
   };
@@ -2392,6 +2456,133 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     };
   }, [debouncedSaveViewState, canvasState.view]);
 
+  // First, add a constant for the clank.fun link near other constants
+  const BILLBOARD_TOKEN_URL = "https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818";
+
+  // Add a function to determine if the user can place a pixel at the current hover position
+  const canPlacePixelAtPosition = useCallback((x: number, y: number): { canPlace: boolean; reason: string; hasHtml: boolean; needsTokens: boolean } => {
+    // First check if user is authenticated and profile is ready
+    if (!authenticated) {
+      return { canPlace: false, reason: "Sign in to place pixels", hasHtml: false, needsTokens: false };
+    }
+    
+    if (!profileReady) {
+      return { canPlace: false, reason: "Profile not ready", hasHtml: false, needsTokens: false };
+    }
+    
+    if (isBanned) {
+      return { canPlace: false, reason: "Your wallet has been banned", hasHtml: false, needsTokens: false };
+    }
+
+    // Check if we're in cooldown period
+    if (nextPlacementTime && Date.now() < nextPlacementTime) {
+      const secondsLeft = Math.ceil((nextPlacementTime - Date.now()) / 1000);
+      return { canPlace: false, reason: `Cooldown: wait ${secondsLeft}s`, hasHtml: false, needsTokens: false };
+    }
+
+    // Get existing pixel data if any
+    const pixelKey = `${x},${y}`;
+    const existingPixel = canvasState.pixels.get(pixelKey);
+    
+    if (!existingPixel) {
+      // No existing pixel, can always place
+      return { canPlace: true, reason: "Ready to place", hasHtml: false, needsTokens: false };
+    }
+
+    // If it's the user's own pixel, they can overwrite it
+    if (existingPixel.wallet_address && address && 
+        existingPixel.wallet_address.toLowerCase() === address.toLowerCase()) {
+      return { canPlace: true, reason: "Your own pixel", hasHtml: false, needsTokens: false };
+    }
+
+    // Check if the pixel is locked (explicit lock, not just tier protection)
+    if (existingPixel.locked_until && Number(existingPixel.locked_until) > Date.now()) {
+      const hoursLeft = Math.ceil((Number(existingPixel.locked_until) - Date.now()) / (1000 * 60 * 60));
+      return { canPlace: false, reason: `Locked for ${hoursLeft}h`, hasHtml: false, needsTokens: false };
+    }
+
+    // Get both balances for comparison
+    // Prioritize the live user profiles for current balances when available
+    let ownerBalance = 0;
+    const ownerWallet = existingPixel.wallet_address?.toLowerCase();
+    
+    // Try to get the most up-to-date balance for the owner
+    if (ownerWallet && userProfiles[ownerWallet]?.profile?.token_balance !== undefined) {
+      // Use the live profile data if available
+      ownerBalance = userProfiles[ownerWallet].profile.token_balance || 0;
+    } else {
+      // Fall back to the balance stored with the pixel
+      ownerBalance = existingPixel.token_balance || 0;
+    }
+    
+    // Your balance
+    const currentUserBalance = userProfile?.token_balance || 0;
+    
+    // Calculate protection based on token tiers
+    const pixelAge = Date.now() - new Date(existingPixel.placed_at).getTime();
+    const ownerTier = getClientTier(ownerBalance);
+    
+    // Check if protection is still active
+    const protectionTimeMs = ownerTier.protectionTime * 60 * 60 * 1000;
+    
+    if (pixelAge < protectionTimeMs && ownerTier.protectionTime > 0) {
+      // Pixel is under protection based on tier
+      
+      // During protection, you can only overwrite if your balance is STRICTLY greater
+      if (currentUserBalance > ownerBalance) {
+        return { 
+          canPlace: true, 
+          reason: `Protected but your balance is higher`,
+          hasHtml: false,
+          needsTokens: false
+        };
+      } else {
+        const tokensNeeded = ownerBalance - currentUserBalance + 1;
+        const hoursLeft = Math.ceil((protectionTimeMs - pixelAge) / (60 * 60 * 1000));
+        const formattedTokens = formatBillboardAmount(tokensNeeded);
+        // Create a hyperlinked message with HTML
+        return { 
+          canPlace: false, 
+          reason: `Protected for ${hoursLeft}h, need ${formattedTokens} tokens. Press 'C' to buy.`,
+          hasHtml: true,
+          needsTokens: true
+        };
+      }
+    }
+    
+    // Protection has expired
+    return { canPlace: true, reason: "Protection expired", hasHtml: false, needsTokens: false };
+  }, [authenticated, profileReady, isBanned, nextPlacementTime, canvasState.pixels, address, userProfile, userProfiles]);
+
+  // Add a function to open the token purchase page
+  const openTokenPurchasePage = useCallback(() => {
+    window.open(BILLBOARD_TOKEN_URL, '_blank');
+  }, []);
+
+  // Add a keyboard event listener to handle the 'c' key for buying tokens
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check if the key is 'c' or 'C'
+      if ((e.key === 'c' || e.key === 'C') && hoverData) {
+        const pixelStatus = canPlacePixelAtPosition(hoverData.x, hoverData.y);
+        if (pixelStatus.needsTokens) {
+          openTokenPurchasePage();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [hoverData, canPlacePixelAtPosition, openTokenPurchasePage]);
+
+  // Add a state to track when to show the buy tokens button
+  const [showBuyTokensButton, setShowBuyTokensButton] = useState(false);
+  // Track the position of the pixel that needs more tokens
+  const [needTokensPosition, setNeedTokensPosition] = useState({ x: 0, y: 0 });
+
+  // Add a ref to store the function to call when flash message is clicked
+  const flashLinkAction = useRef<(() => void) | null>(null);
+
   return (
     <div 
       ref={containerRef}
@@ -2419,13 +2610,44 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           {touchMode === 'view' ? '👆' : '👁️'}
         </button>
       )}
+
+      {/* Buy Tokens Button for mobile/touch users */}
+      {showBuyTokensButton && (
+        <div 
+          className="fixed bottom-24 left-1/2 transform -translate-x-1/2 z-[100] animate-bounce"
+        >
+          <button
+            className="px-4 py-2 rounded-lg bg-yellow-600 hover:bg-yellow-500 text-white font-bold shadow-lg flex items-center gap-2"
+            onClick={openTokenPurchasePage}
+          >
+            <span>Buy $BILLBOARD Tokens</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="16" />
+              <line x1="8" y1="12" x2="16" y2="12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* Flash Message - keep within container but increase z-index */}
       {flashMessage && (
-        <div className="fixed left-1/2 top-32 transform -translate-x-1/2 z-50">
-          <FlashMessage 
-            message={flashMessage} 
-            onComplete={() => setFlashMessage(null)} 
-          />
+        <div className="fixed left-1/2 top-1/3 transform -translate-x-1/2 -translate-y-1/2 z-[100]">
+          <div 
+            onClick={() => flashLinkAction.current && flashLinkAction.current()}
+            className={flashLinkAction.current ? "cursor-pointer" : ""}
+          >
+            <FlashMessage 
+              message={flashMessage}
+              hasLink={flashHasLink}
+              duration={flashHasLink ? 15000 : 10000} // 15 seconds for links, 10 seconds for regular messages
+              onComplete={() => {
+                setFlashMessage(null);
+                setFlashHasLink(false);
+                flashLinkAction.current = null;
+              }} 
+            />
+          </div>
         </div>
       )}
       
@@ -2471,12 +2693,19 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           />
           {/* Fixed Position Tooltip */}
           <div 
-            className="absolute top-[calc(2rem+44px)] right-2 z-50 bg-neutral-900/90 rounded border border-neutral-700"
+            className={`absolute top-[calc(2rem+44px)] right-2 z-50 rounded border transition-colors duration-300 ${
+              hoverData && hoverData.pixel ? (
+                canPlacePixelAtPosition(hoverData.x, hoverData.y).canPlace 
+                  ? 'bg-green-900/90 border-green-700/90' 
+                  : 'bg-red-900/90 border-red-700/90'
+              ) : 'bg-neutral-900/90 border-neutral-700'
+            }`}
             style={{
               fontFamily: 'var(--font-mono)',
               padding: '12px',
               pointerEvents: 'auto', // Allow interaction with the tooltip
-              minWidth: '180px'
+              minWidth: '180px',
+              maxWidth: '220px'  // Set a max width to prevent horizontal stretching
             }}
             onMouseEnter={() => handleTooltipInteraction(true)}
             onMouseLeave={() => handleTooltipInteraction(false)}
@@ -2555,6 +2784,23 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
                 v{hoverData.pixel.version}
               </div>
             )}
+            
+            {/* Status indicator */}
+            {authenticated && (
+              <div className="mt-2 pt-1 border-t border-neutral-700/50">
+                <div className={`text-xs ${
+                  canPlacePixelAtPosition(hoverData.x, hoverData.y).canPlace
+                    ? 'text-green-400'
+                    : 'text-red-400'
+                } break-words`}>
+                  {canPlacePixelAtPosition(hoverData.x, hoverData.y).hasHtml ? (
+                    <div dangerouslySetInnerHTML={{ __html: canPlacePixelAtPosition(hoverData.x, hoverData.y).reason }} />
+                  ) : (
+                    canPlacePixelAtPosition(hoverData.x, hoverData.y).reason
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}
@@ -2562,15 +2808,35 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       {/* Simple coordinates tooltip when hovering empty pixels */}
       {hoverData && !hoverData.pixel && (
         <div 
-          className="absolute top-[calc(2rem+44px)] right-2 z-50 bg-neutral-900/90 rounded px-3 py-1.5 text-xs font-mono border border-neutral-700"
+          className={`absolute top-[calc(2rem+44px)] right-2 z-50 rounded px-3 py-1.5 text-xs font-mono border transition-colors duration-300 ${
+            authenticated && canPlacePixelAtPosition(hoverData.x, hoverData.y).canPlace 
+              ? 'bg-green-900/90 border-green-700/90' 
+              : 'bg-red-900/90 border-red-700/90'
+          }`}
           style={{
             fontFamily: 'var(--font-mono)',
-            pointerEvents: 'none'
+            pointerEvents: 'none',
+            maxWidth: '220px'  // Set a max width for empty pixel tooltip too
           }}
         >
           <div className="text-neutral-400">
             Empty pixel: {hoverData.x}, {hoverData.y}
           </div>
+          
+          {/* Status indicator for empty pixels */}
+          {authenticated && (
+            <div className={`mt-1 text-xs break-words ${
+              canPlacePixelAtPosition(hoverData.x, hoverData.y).canPlace
+                ? 'text-green-400'
+                : 'text-red-400'
+            }`}>
+              {canPlacePixelAtPosition(hoverData.x, hoverData.y).hasHtml ? (
+                <div dangerouslySetInnerHTML={{ __html: canPlacePixelAtPosition(hoverData.x, hoverData.y).reason }} />
+              ) : (
+                canPlacePixelAtPosition(hoverData.x, hoverData.y).reason
+              )}
+            </div>
+          )}
         </div>
       )}
       

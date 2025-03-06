@@ -12,6 +12,7 @@ import { CanvasRef } from '@/components/canvas/CanvasV2';
 import { pusherManager } from '@/lib/client/pusherManager';
 import Head from 'next/head';
 import { useBanStatus } from '@/lib/hooks/useBanStatus';
+import { CONFIG_VERSION } from '@/lib/server/tiers.config';
 
 export default function Home() {
   const { authenticated, user, getAccessToken } = usePrivy();
@@ -84,9 +85,11 @@ export default function Home() {
   // Show tokenomics popup after a short delay
   useEffect(() => {
     const hasSeenPopup = localStorage.getItem('tokenomicsPopupClosed') === 'true';
+    const storedVersion = localStorage.getItem('tokenomicsConfigVersion');
+    const isNewVersion = storedVersion !== CONFIG_VERSION;
     
-    // Only show the popup if the user hasn't closed it before
-    if (!hasSeenPopup) {
+    // Show the popup if user hasn't seen it before OR if there's a new version
+    if (!hasSeenPopup || isNewVersion) {
       const popupTimer = setTimeout(() => {
         setShowTokenomicsPopup(true);
       }, 2000); // Show popup after 2 seconds
@@ -114,18 +117,59 @@ export default function Home() {
           return;
         }
 
-        const response = await fetch("/api/users/check-profile", {
+        const walletAddress = user.wallet.address;
+        
+        // First attempt without signature
+        let response = await fetch("/api/users/check-profile", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-wallet-address": user.wallet.address,
+            "x-wallet-address": walletAddress,
             "x-privy-token": token
           }
         });
 
+        // If the server requires a signature
+        if (response.status === 401) {
+          const errorData = await response.json();
+          
+          if (errorData.needs_signature) {
+            console.log("New wallet registration, signature required");
+            
+            // Generate a message to sign
+            const message = `Verify wallet ownership for Billboard: ${walletAddress}`;
+            let signature = '';
+            
+            try {
+              // Use the Privy client to sign the message
+              // We need to cast user.wallet to any because the type definition is incomplete
+              signature = await (user.wallet as any).signMessage(message);
+              console.log("✅ Signature obtained for wallet verification");
+              
+              // Retry with signature
+              response = await fetch("/api/users/check-profile", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "x-wallet-address": walletAddress,
+                  "x-privy-token": token
+                },
+                body: JSON.stringify({
+                  message,
+                  signature
+                })
+              });
+            } catch (error) {
+              console.error("Failed to sign message:", error);
+              alert("You must sign the message to verify wallet ownership");
+              return;
+            }
+          }
+        }
+
         if (!response.ok) {
           console.error('Failed to store user data:', await response.text());
-          throw new Error('Failed to store user data');
+          return;
         }
 
         console.log("✅ Profile check/creation complete, Canvas can now fetch balance");
@@ -230,10 +274,27 @@ export default function Home() {
         </main>
       </div>
       
+      {/* Development-only test controls */}
+      {process.env.NODE_ENV === 'development' && (
+        <div className="fixed bottom-4 right-4 z-50">
+          <button 
+            onClick={() => {
+              localStorage.removeItem('tokenomicsPopupClosed');
+              localStorage.removeItem('tokenomicsConfigVersion');
+              setShowTokenomicsPopup(true);
+            }}
+            className="bg-purple-600 text-white px-3 py-1 rounded text-xs"
+          >
+            Test Tokenomics Popup
+          </button>
+        </div>
+      )}
+      
       {/* Tokenomics Popup */}
       <TokenomicsPopup 
         isOpen={showTokenomicsPopup} 
-        onClose={() => setShowTokenomicsPopup(false)} 
+        onClose={() => setShowTokenomicsPopup(false)}
+        configVersion={CONFIG_VERSION}
       />
     </>
   );

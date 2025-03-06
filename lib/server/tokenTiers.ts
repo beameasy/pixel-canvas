@@ -108,8 +108,13 @@ export async function canPlacePixel(walletAddress: string): Promise<boolean> {
 export async function canOverwritePixel(
   newWalletAddress: string, 
   existingPixelData: any
-): Promise<{ canOverwrite: boolean; message?: string }> {
-  if (!existingPixelData) return { canOverwrite: true };
+): Promise<{ canOverwrite: boolean; message?: string; hasLink: boolean }> {
+  if (!existingPixelData) return { canOverwrite: true, hasLink: false };
+  
+  // Users can always overwrite their own pixels
+  if (newWalletAddress.toLowerCase() === existingPixelData.wallet_address.toLowerCase()) {
+    return { canOverwrite: true, hasLink: false };
+  }
   
   // Check if wallet is an admin
   const isAdmin = (process.env.ADMIN_WALLETS || '')
@@ -119,7 +124,7 @@ export async function canOverwritePixel(
     .includes(newWalletAddress.toLowerCase());
   
   // Admins can always overwrite pixels
-  if (isAdmin) return { canOverwrite: true };
+  if (isAdmin) return { canOverwrite: true, hasLink: false };
 
   try {
     // Get the current token balances for both users
@@ -141,20 +146,24 @@ export async function canOverwritePixel(
       // During protection, need higher balance than the CURRENT balance of the pixel owner
       if (newBalance <= existingWalletCurrentBalance) {
         const hoursLeft = Math.ceil((existingTier.protectionTime * 60 * 60 * 1000 - pixelAge) / (60 * 60 * 1000));
+        const tokensNeeded = existingWalletCurrentBalance - newBalance + 1;
+        const clankLink = "https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818";
+        
         const messagePrefix = newBalance === 0 ? 
-          `This pixel is protected. You need more than ${formatBillboardAmount(existingWalletCurrentBalance)} tokens to overwrite it.` :
-          `This pixel is protected for ${hoursLeft} more hours by a user with ${formatBillboardAmount(existingWalletCurrentBalance)} tokens. You need more than ${formatBillboardAmount(existingWalletCurrentBalance)} tokens to overwrite it.`;
+          `This pixel is protected. You need more than ${formatBillboardAmount(existingWalletCurrentBalance)} tokens to overwrite it. <a href="${clankLink}" target="_blank" class="text-emerald-400 underline">Acquire ${formatBillboardAmount(tokensNeeded)} tokens here &rarr;</a>` :
+          `This pixel is protected for ${hoursLeft} more hours by a user with ${formatBillboardAmount(existingWalletCurrentBalance)} tokens. You need an additional ${formatBillboardAmount(tokensNeeded)} tokens to overwrite it. <a href="${clankLink}" target="_blank" class="text-emerald-400 underline">Acquire tokens here &rarr;</a>`;
         
         return {
           canOverwrite: false,
-          message: messagePrefix
+          message: messagePrefix,
+          hasLink: true
         };
       }
     }
 
-    return { canOverwrite: true };
+    return { canOverwrite: true, hasLink: false };
   } catch (error) {
     console.error('Error in canOverwritePixel:', error);
-    return { canOverwrite: true };
+    return { canOverwrite: true, hasLink: false };
   }
 }

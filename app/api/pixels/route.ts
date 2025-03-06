@@ -344,7 +344,8 @@ export async function POST(request: Request) {
     const overwriteCheck = await canOverwritePixel(walletAddress, existingPixelData);
     if (!overwriteCheck.canOverwrite) {
       return NextResponse.json({ 
-        error: overwriteCheck.message || 'Cannot overwrite this pixel'
+        error: overwriteCheck.message || 'Cannot overwrite this pixel',
+        hasLink: overwriteCheck.hasLink || false
       }, { status: 403 });
     }
 

@@ -4,6 +4,19 @@ import { extractPrivyId } from '@/lib/jose';
 import { getFarcasterUser } from '@/components/farcaster/api/getFarcasterUser';
 import { getBillboardBalance } from '@/app/api/_lib/subgraphClient';
 import { validatePrivyToken } from '@/middleware';
+import { ethers } from 'ethers';
+
+// Function to verify wallet signature
+async function verifyWalletSignature(address: string, message: string, signature: string): Promise<boolean> {
+  try {
+    // Standard Ethereum signed message format
+    const recoveredAddress = ethers.utils.verifyMessage(message, signature);
+    return recoveredAddress.toLowerCase() === address.toLowerCase();
+  } catch (error) {
+    console.error('Error verifying signature:', error);
+    return false;
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -22,19 +35,54 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Wallet authentication failed' }, { status: 401 });
     }
     
-    console.log('📝 Check Profile Headers:', { 
-      walletAddress, 
-      privyId: !!privyId, 
-      privyToken: !!privyToken
-    });
-    
-    // Get user data from Redis
+    // Get user data from Redis to check if this is a new registration
     const userData = await redis.hget('users', walletAddress);
     let parsedUserData = userData ? 
       (typeof userData === 'string' ? JSON.parse(userData) : userData) 
       : null;
     
-    console.log('📝 Existing User Data:', parsedUserData);
+    // For new users, require signature verification
+    if (!parsedUserData) {
+      // Try to parse the request body to get signature
+      let signature, message;
+      
+      try {
+        const body = await request.json();
+        signature = body.signature;
+        message = body.message;
+      } catch (error) {
+        // No body or invalid JSON
+      }
+      
+      // If no signature was provided, return a specific error code requesting signature
+      if (!signature || !message) {
+        return NextResponse.json({ 
+          error: 'Wallet signature required',
+          needs_signature: true,
+          wallet_address: walletAddress
+        }, { status: 401 });
+      }
+      
+      // Verify the signature matches the claimed wallet address
+      const isValidSignature = await verifyWalletSignature(walletAddress, message, signature);
+      
+      if (!isValidSignature) {
+        console.log('🚨 Invalid signature during profile creation', { walletAddress });
+        return NextResponse.json({ 
+          error: 'Invalid wallet signature. You must prove wallet ownership.',
+          needs_signature: true,
+          wallet_address: walletAddress
+        }, { status: 401 });
+      }
+      
+      console.log('✅ Wallet signature verified for new user', { walletAddress });
+    }
+    
+    console.log('📝 Check Profile Headers:', { 
+      walletAddress, 
+      privyId: !!privyId, 
+      privyToken: !!privyToken
+    });
     
     // Fetch on-chain $BILLBOARD token balance from Alchemy
     let onChainBalance = 0;
