@@ -48,7 +48,7 @@ function PlacementMessage({ placement }: { placement: PixelPlacement }) {
     >
       <LiveTimeAgo date={new Date(placement.placed_at)} />{' '}
       <span className="inline-flex items-center gap-2">
-        {placement.farcaster_pfp && (
+        {placement.farcaster_pfp && placement.farcaster_pfp !== 'null' && (
           <>
             <FarcasterLogo className="text-purple-400" size="sm" />
             <Image
@@ -61,17 +61,17 @@ function PlacementMessage({ placement }: { placement: PixelPlacement }) {
           </>
         )}
         <a 
-          href={placement.farcaster_username 
+          href={placement.farcaster_username && placement.farcaster_username !== 'null'
             ? `https://warpcast.com/${placement.farcaster_username}`
             : `https://basescan.org/address/${placement.wallet_address}`
           }
           target="_blank"
           rel="noopener noreferrer"
           className={`${
-            placement.farcaster_username ? "text-purple-400 hover:text-purple-300" : "text-blue-400 hover:text-blue-300"
+            placement.farcaster_username && placement.farcaster_username !== 'null' ? "text-purple-400 hover:text-purple-300" : "text-blue-400 hover:text-blue-300"
           }`}
         >
-          {placement.farcaster_username ? 
+          {placement.farcaster_username && placement.farcaster_username !== 'null' ? 
             `@${placement.farcaster_username}` : 
             `${placement.wallet_address.slice(0, 4)}...${placement.wallet_address.slice(-4)}`
           }

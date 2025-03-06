@@ -77,7 +77,7 @@ export default function LogsPage() {
             >
               <div className="flex flex-wrap items-center gap-2 sm:gap-4">
                 <div className="flex items-center gap-2 min-w-[140px]">
-                  {placement.farcaster_pfp && (
+                  {placement.farcaster_pfp && placement.farcaster_pfp !== 'null' && (
                     <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-full overflow-hidden flex-shrink-0">
                       <Image 
                         src={placement.farcaster_pfp}
@@ -89,19 +89,19 @@ export default function LogsPage() {
                     </div>
                   )}
                   <a 
-                    href={placement.farcaster_username 
+                    href={placement.farcaster_username && placement.farcaster_username !== 'null'
                       ? `https://warpcast.com/${placement.farcaster_username}`
                       : `https://basescan.org/address/${placement.wallet_address}`
                     }
                     target="_blank"
                     rel="noopener noreferrer"
                     className={`font-mono truncate ${
-                      placement.farcaster_username 
+                      placement.farcaster_username && placement.farcaster_username !== 'null'
                         ? "text-purple-400 hover:text-purple-300" 
                         : "text-blue-400 hover:text-blue-300"
                     }`}
                   >
-                    {placement.farcaster_username 
+                    {placement.farcaster_username && placement.farcaster_username !== 'null'
                       ? `@${placement.farcaster_username}`
                       : `${placement.wallet_address.slice(0, 6)}...${placement.wallet_address.slice(-4)}`
                     }

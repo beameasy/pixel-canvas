@@ -8,6 +8,7 @@ import { getBillboardBalance, getTokensNeededForUsdAmount } from '@/app/api/_lib
 import { pusher } from '@/lib/server/pusher';
 import { v4 as uuidv4 } from 'uuid';
 import { canPlacePixel, canOverwritePixel, getUserTier } from '@/lib/server/tokenTiers';
+import { DEFAULT_TIER } from '@/lib/server/tiers.config';
 
 const ONE_HOUR = 60 * 60 * 1000; // 1 hour in milliseconds
 
@@ -275,9 +276,16 @@ export async function POST(request: Request) {
 
     // Balance-based cooldown check (skip for admins)
     if (balance === 0 && !isAdmin) {
-      return NextResponse.json({ 
-        error: 'Please wait 60 seconds between pixels (0 balance)'
-      }, { status: 429 });
+      const lastPlaced = (await redis.hget('pixel:cooldowns', walletAddress) || '0').toString();
+      if (lastPlaced && lastPlaced !== '0') {
+        const timeSinceLastPlaced = Date.now() - parseInt(lastPlaced);
+        if (timeSinceLastPlaced < DEFAULT_TIER.cooldownSeconds * 1000) {
+          return NextResponse.json({ 
+            error: `Please wait ${Math.ceil((DEFAULT_TIER.cooldownSeconds * 1000 - timeSinceLastPlaced) / 1000)} seconds`
+          }, { status: 429 });
+        }
+      }
+      // For first-time 0 balance users, continue with placement
     }
 
     // Regular tier-based cooldown check (skip for admins)

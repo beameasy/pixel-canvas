@@ -46,7 +46,7 @@ export default function Ticker() {
       className="ticker-item"
     >
       <span className="text-gray-400 mr-1">{index + 1}.</span>
-      {user.farcaster_pfp && (
+      {user.farcaster_pfp && user.farcaster_pfp !== 'null' && (
         <span className="inline-flex items-center gap-2">
           <FarcasterLogo className="text-purple-400" size="sm" />
           <Image
@@ -58,7 +58,7 @@ export default function Ticker() {
           />
         </span>
       )}
-      {user.farcaster_username ? (
+      {user.farcaster_username && user.farcaster_username !== 'null' ? (
         <a 
           href={`https://warpcast.com/${user.farcaster_username}`}
           target="_blank"

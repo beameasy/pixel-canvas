@@ -18,12 +18,13 @@ export default function Home() {
   const { isBanned, banReason } = useBanStatus();
   const [selectedColor, setSelectedColor] = useState('#000000');
   const [showError, setShowError] = useState(false);
-  const [mousePos, setMousePos] = useState({ x: -1, y: -1 });
+  const [mousePos, setMousePos] = useState<{ x: number; y: number }>({ x: -1, y: -1 });
   const [touchMode, setTouchMode] = useState<'place' | 'view'>('place');
   const canvasRef = useRef<CanvasRef>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [showTokenomicsPopup, setShowTokenomicsPopup] = useState(false);
   const [profileReady, setProfileReady] = useState(false);
+  const [canvasMountKey, setCanvasMountKey] = useState(Date.now());
 
   const handleAuthError = () => {
     setShowError(true);
@@ -43,6 +44,22 @@ export default function Home() {
   useEffect(() => {
     const timer = setTimeout(() => setIsLoading(false), 3000);
     return () => clearTimeout(timer);
+  }, []);
+
+  // Reset canvas view when navigating back to this page
+  useEffect(() => {
+    // Update the mount key to force a full remount
+    setCanvasMountKey(Date.now());
+    
+    // Short delay to ensure canvas is fully mounted
+    const resetTimer = setTimeout(() => {
+      if (canvasRef.current) {
+        console.log('🔄 Resetting canvas view after navigation');
+        canvasRef.current.resetView();
+      }
+    }, 300);
+    
+    return () => clearTimeout(resetTimer);
   }, []);
 
   // Show tokenomics popup after a short delay
@@ -175,6 +192,7 @@ export default function Home() {
               </div>
             ) : (
               <Canvas 
+                key={`canvas-${user?.wallet?.address || 'no-wallet'}-${canvasMountKey}`}
                 ref={canvasRef}
                 selectedColor={selectedColor}
                 onColorSelect={setSelectedColor}

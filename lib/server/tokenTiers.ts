@@ -141,9 +141,13 @@ export async function canOverwritePixel(
       // During protection, need higher balance than the CURRENT balance of the pixel owner
       if (newBalance <= existingWalletCurrentBalance) {
         const hoursLeft = Math.ceil((existingTier.protectionTime * 60 * 60 * 1000 - pixelAge) / (60 * 60 * 1000));
+        const messagePrefix = newBalance === 0 ? 
+          `This pixel is protected. You need more than ${formatBillboardAmount(existingWalletCurrentBalance)} tokens to overwrite it.` :
+          `This pixel is protected for ${hoursLeft} more hours by a user with ${formatBillboardAmount(existingWalletCurrentBalance)} tokens. You need more than ${formatBillboardAmount(existingWalletCurrentBalance)} tokens to overwrite it.`;
+        
         return {
           canOverwrite: false,
-          message: `This pixel is protected for ${hoursLeft} more hours by a user with ${formatBillboardAmount(existingWalletCurrentBalance)} tokens. You need more than ${formatBillboardAmount(existingWalletCurrentBalance)} tokens to overwrite it.`
+          message: messagePrefix
         };
       }
     }

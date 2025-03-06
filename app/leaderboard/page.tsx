@@ -9,6 +9,7 @@ interface LeaderboardEntry {
   farcaster_username: string | null;
   farcaster_pfp: string | null;
   total_pixels: number;
+  current_pixels: number;
   pixels_24h: number;
   pixels_1h: number;
   favorite_color: string;
@@ -99,23 +100,27 @@ export default function Leaderboard() {
                     onClick={() => handleSort('wallet_address')}>
                   User
                 </th>
-                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200 text-center"
                     onClick={() => handleSort('total_pixels')}>
-                  Total Pixels
+                  Total Placed
                 </th>
-                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200 text-center"
+                    onClick={() => handleSort('current_pixels')}>
+                  On Canvas
+                </th>
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200 text-center"
                     onClick={() => handleSort('pixels_24h')}>
                   Last 24h
                 </th>
-                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200 text-center"
                     onClick={() => handleSort('pixels_1h')}>
                   Last Hour
                 </th>
-                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200"
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200 text-center"
                     onClick={() => handleSort('favorite_color')}>
                   Favorite Color
                 </th>
-                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200 hidden md:table-cell"
+                <th className="p-4 text-slate-400 font-mono cursor-pointer hover:text-slate-200 hidden md:table-cell text-center"
                     onClick={() => handleSort('token_balance')}>
                   $BILLBOARD
                 </th>
@@ -136,14 +141,14 @@ export default function Leaderboard() {
                     <td className="p-4 font-mono text-slate-400">{index + 1}</td>
                     <td className="p-4">
                       <div className="flex items-center gap-2">
-                        {user.farcaster_pfp && (
+                        {user.farcaster_pfp && user.farcaster_pfp !== 'null' && (
                           <img 
                             src={user.farcaster_pfp} 
                             alt="" 
                             className="w-6 h-6 rounded-full"
                           />
                         )}
-                        {user.farcaster_username ? (
+                        {user.farcaster_username && user.farcaster_username !== 'null' ? (
                           <a 
                             href={`https://warpcast.com/${user.farcaster_username}`}
                             target="_blank"
@@ -164,11 +169,12 @@ export default function Leaderboard() {
                         )}
                       </div>
                     </td>
-                    <td className="p-4 font-mono text-emerald-400">{user.total_pixels}</td>
-                    <td className="p-4 font-mono text-emerald-400">{user.pixels_24h}</td>
-                    <td className="p-4 font-mono text-emerald-400">{user.pixels_1h}</td>
-                    <td className="p-4">
-                      <div className="flex items-center gap-2">
+                    <td className="p-4 font-mono text-emerald-400 text-center">{user.total_pixels}</td>
+                    <td className="p-4 font-mono text-emerald-400 text-center">{user.current_pixels}</td>
+                    <td className="p-4 font-mono text-emerald-400 text-center">{user.pixels_24h}</td>
+                    <td className="p-4 font-mono text-emerald-400 text-center">{user.pixels_1h}</td>
+                    <td className="p-4 text-center">
+                      <div className="flex items-center gap-2 justify-center">
                         <div 
                           className="w-4 h-4 rounded-sm border border-slate-700"
                           style={{ backgroundColor: user.favorite_color }}
@@ -176,7 +182,7 @@ export default function Leaderboard() {
                         <span className="font-mono text-slate-300">{user.favorite_color}</span>
                       </div>
                     </td>
-                    <td className="p-4 font-mono text-amber-400 hidden md:table-cell">
+                    <td className="p-4 font-mono text-amber-400 hidden md:table-cell text-center">
                       {user.token_balance ? formatBalance(user.token_balance) : '0'}
                     </td>
                   </tr>

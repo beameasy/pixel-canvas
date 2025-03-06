@@ -348,7 +348,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       const url = force ? `/api/canvas?t=${Date.now()}` : '/api/canvas';
       
       const headers: HeadersInit = {
-        'Cache-Control': force ? 'no-cache, no-store' : 'max-age=60, stale-while-revalidate=600',
+        'Cache-Control': force ? 'no-cache, no-store' : 'max-age=600, stale-while-revalidate=600',
         'Vary': 'Accept-Encoding',
         'Pragma': force ? 'no-cache' : ''
       };
@@ -1847,15 +1847,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         height: canvasElement?.height,
         offsetWidth: canvasElement?.offsetWidth,
         offsetHeight: canvasElement?.offsetHeight,
-        style: canvasElement?.style,
-        visibility: canvasElement?.style.visibility,
-        display: canvasElement?.style.display
+        containerWidth: containerRef.current?.offsetWidth,
+        remounted: 'fresh-mount'
       });
       
       // First check if canvasRef.current and containerRef.current exist
       if (!canvasRef.current || !containerRef.current) return;
       
-    const dpr = window.devicePixelRatio || 1;
+      const dpr = window.devicePixelRatio || 1;
       const containerWidth = containerRef.current.offsetWidth || 600;
       
       // Now it's safe to access canvasRef.current since we've checked it's not null
@@ -1867,11 +1866,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       canvasRef.current.style.height = `${containerWidth}px`;
 
       // Scale context
-    const ctx = canvasRef.current.getContext('2d');
-    if (ctx) {
-      ctx.scale(dpr, dpr);
-      ctx.imageSmoothingEnabled = false;
-    }
+      const ctx = canvasRef.current.getContext('2d');
+      if (ctx) {
+        ctx.scale(dpr, dpr);
+        ctx.imageSmoothingEnabled = false;
+      }
 
       // Also initialize overlay canvas - check for null before using
       if (overlayCanvasRef.current) {
@@ -1887,8 +1886,18 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         }
       }
 
-      // Force a redraw
-    needsRender.current = true;
+      // Reset view to ensure proper initial positioning
+      resetView();
+      
+      // Clear any preview pixels
+      setInteractionState(prev => ({
+        ...prev,
+        previewPixel: { x: -1, y: -1 }
+      }));
+      setHoverData(null);
+      
+      // Force render
+      needsRender.current = true;
     };
 
     // Initialize immediately
@@ -2277,7 +2286,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             }}
           >
             <div className="flex items-center gap-2 text-xs">
-              {hoverData?.pixel?.farcaster_pfp && (
+              {hoverData?.pixel?.farcaster_pfp && hoverData.pixel.farcaster_pfp !== 'null' && (
                 <>
                   <FarcasterLogo className="text-purple-400" size="sm" />
                   <img 
@@ -2291,7 +2300,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
                 </>
               )}
               <span className="text-purple-400">
-                {hoverData?.pixel?.farcaster_username ? (
+                {hoverData?.pixel?.farcaster_username && hoverData.pixel.farcaster_username !== 'null' ? (
                   <a 
                     href={`https://warpcast.com/${hoverData.pixel.farcaster_username}`}
                     target="_blank"

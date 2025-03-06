@@ -5,31 +5,25 @@ export async function GET() {
   try {
     // Get current canvas state from Redis
     const pixels = await redis.hgetall('canvas:pixels');
-
-    if (!pixels) {
-      return NextResponse.json([], {
-        headers: {
-          'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30'
-        }
-      });
-    }
-
+    
+    // Get all pixel history to calculate total pixels placed
+    const allPixelHistory = await redis.zrange('canvas:history', 0, -1);
     const pixelHistory24h = await redis.zrange('canvas:history', Date.now() - 86400000, Date.now(), { byScore: true });
     const pixelHistory1h = await redis.zrange('canvas:history', Date.now() - 3600000, Date.now(), { byScore: true });
     const farcasterData = await redis.hgetall('users');
 
     const userStats = new Map();
 
-    // Process current pixels
-    if (pixels) {
-      Object.entries(pixels).forEach(([key, value]) => {
-        const [x, y] = key.split(',');
-        const data = typeof value === 'string' ? JSON.parse(value) : value;
+    // Process all pixel history for total counts
+    if (allPixelHistory && allPixelHistory.length > 0) {
+      allPixelHistory.forEach(entry => {
+        const data = typeof entry === 'string' ? JSON.parse(entry) : entry;
         const { wallet_address, color } = data;
         
         const stats = userStats.get(wallet_address) || {
           wallet_address,
           total_pixels: 0,
+          current_pixels: 0,
           pixels_24h: 0,
           pixels_1h: 0,
           colors: new Map(),
@@ -43,15 +37,30 @@ export async function GET() {
       });
     }
 
+    // Process current pixels on canvas
+    if (pixels) {
+      Object.entries(pixels).forEach(([key, value]) => {
+        const data = typeof value === 'string' ? JSON.parse(value) : value;
+        const { wallet_address } = data;
+        
+        const stats = userStats.get(wallet_address);
+        if (stats) {
+          stats.current_pixels++;
+        }
+      });
+    }
+
     // Process recent activity
     pixelHistory24h.forEach(entry => {
-      const { wallet_address } = typeof entry === 'string' ? JSON.parse(entry) : entry;
+      const data = typeof entry === 'string' ? JSON.parse(entry) : entry;
+      const { wallet_address } = data;
       const stats = userStats.get(wallet_address);
       if (stats) stats.pixels_24h++;
     });
 
     pixelHistory1h.forEach(entry => {
-      const { wallet_address } = typeof entry === 'string' ? JSON.parse(entry) : entry;
+      const data = typeof entry === 'string' ? JSON.parse(entry) : entry;
+      const { wallet_address } = data;
       const stats = userStats.get(wallet_address);
       if (stats) stats.pixels_1h++;
     });
@@ -65,7 +74,7 @@ export async function GET() {
         if (stats) {
           stats.farcaster_username = username;
           stats.farcaster_pfp = pfp_url;
-          stats.token_balance = Number(token_balance) || 0;  // Add token balance from user data
+          stats.token_balance = Number(token_balance) || 0;
         }
       });
     }
@@ -76,13 +85,14 @@ export async function GET() {
         farcaster_username: stats.farcaster_username,
         farcaster_pfp: stats.farcaster_pfp,
         total_pixels: stats.total_pixels || 0,
+        current_pixels: stats.current_pixels || 0,
         pixels_24h: stats.pixels_24h || 0,
         pixels_1h: stats.pixels_1h || 0,
         favorite_color: Array.from(stats.colors.entries() as [string, number][])
           .sort((a, b) => b[1] - a[1])[0]?.[0] || '#000000',
-        token_balance: stats.token_balance || 0  // Include in output
+        token_balance: stats.token_balance || 0
       }))
-      .filter(user => user.total_pixels > 0); // Only show users who have placed pixels
+      .filter(user => user.total_pixels > 0);
 
     return NextResponse.json(leaderboard, {
       headers: {
