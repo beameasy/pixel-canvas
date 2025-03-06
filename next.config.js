@@ -8,7 +8,17 @@ const nextConfig = {
         pathname: '/**',
       },
     ],
-    domains: ['i.imgur.com', 'i.seadn.io'],
+    domains: [
+      'i.imgur.com',
+      'avatars.githubusercontent.com',
+      'pbs.twimg.com',
+      'cdn.stamp.fyi',
+      'ipfs.io',
+      'cloudflare-ipfs.com',
+      'gateway.pinata.cloud',
+      // Add other common domains you've seen
+    ],
+    unoptimized: true,
   },
   eslint: {
     ignoreDuringBuilds: true,

@@ -64,6 +64,8 @@ export interface CanvasRef {
   resetView: () => void;
   clearCanvas: () => void;
   shareCanvas: () => Promise<string>;
+  getViewState: () => ViewState;
+  setViewState: (viewState: ViewState) => void;
 }
 
 // Add type for TIERS if not already defined
@@ -686,8 +688,28 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       ...prev,
       pixels: new Map()
     })),
-    shareCanvas
-  }), [resetView, shareCanvas]);
+    shareCanvas,
+    getViewState: () => {
+      return canvasState.view;
+    },
+    setViewState: (viewState: ViewState) => {
+      // Ensure scale is within acceptable bounds
+      const safeScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, viewState.scale));
+      
+      // Apply the view state
+      setCanvasState(prev => ({
+        ...prev,
+        view: {
+          x: viewState.x,
+          y: viewState.y,
+          scale: safeScale
+        }
+      }));
+      
+      // Force a render with the new view
+      needsRender.current = true;
+    }
+  }), [resetView, shareCanvas, canvasState.view]);
 
   // Modify handleMouseDown
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -717,7 +739,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         ...prev,
         isDragging: true,
         dragStart: { x: e.clientX, y: e.clientY },
-        dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
+        dragStartPos: { x: canvasState.view.x, y: canvasState.view.y },
+        previewPixel: { x: -1, y: -1 } // Ensure preview pixel is cleared for drag operations
       }));
       return;
     }
@@ -726,15 +749,22 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     if (x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && e.button === 0 && address) {
       setInteractionState(prev => ({
         ...prev,
-        previewPixel: { x, y }
+        isDragging: true, // Always start a potential drag
+        dragStart: { x: e.clientX, y: e.clientY },
+        dragStartPos: { x: canvasState.view.x, y: canvasState.view.y },
+        previewPixel: { x, y } // Set the preview pixel for potential placement
       }));
+      return;
     }
 
+    // If we're here, we're starting a drag but not for pixel placement
+    // (e.g., outside the grid or without an address)
     setInteractionState(prev => ({
       ...prev,
       isDragging: true,
       dragStart: { x: e.clientX, y: e.clientY },
-      dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
+      dragStartPos: { x: canvasState.view.x, y: canvasState.view.y },
+      previewPixel: { x: -1, y: -1 } // Ensure preview pixel is cleared
     }));
   };
 
@@ -783,7 +813,20 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
   }, [canvasState.view, selectedColor, interactionState.isDragging]);
 
-  // Update handleMouseMove
+  // New function to handle tooltip persistence
+  const handleTooltipInteraction = useCallback((show: boolean) => {
+    if (window.tooltipTimeout) {
+      clearTimeout(window.tooltipTimeout);
+    }
+    
+    if (!show) {
+      window.tooltipTimeout = setTimeout(() => {
+        setHoverData(null);
+      }, 2000); // 2 second delay before hiding
+    }
+  }, []);
+  
+  // Modify handleMouseMove to use our new tooltip handler
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -802,6 +845,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       // Clear the preview when dragging
       drawPreviewPixel(-1, -1);
       onMousePosChange(null);
+      
+      // Also ensure the previewPixel is cleared in the state
+      if (interactionState.previewPixel.x !== -1 || interactionState.previewPixel.y !== -1) {
+        setInteractionState(prev => ({
+          ...prev,
+          previewPixel: { x: -1, y: -1 }
+        }));
+      }
     }
 
     // Handle dragging
@@ -826,6 +877,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       const pixelData = canvasState.pixels.get(key);
 
       if (canvasState.view.scale >= TOOLTIP_ZOOM_THRESHOLD) {
+        // Clear any hover timeout when we're over a pixel 
+        if (window.tooltipTimeout) {
+          clearTimeout(window.tooltipTimeout);
+        }
+        
         setHoverData({
           x,
           y,
@@ -834,15 +890,16 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           pixel: pixelData || null
         });
       }
-    } else {
-      setHoverData(null);
     }
   }, [canvasState.pixels, canvasState.view, interactionState.isDragging, interactionState.dragStart, interactionState.dragStartPos, onMousePosChange, drawPreviewPixel]);
 
   const handleMouseLeave = useCallback(() => {
     drawPreviewPixel(-1, -1);
-    setHoverData(null);
-  }, [drawPreviewPixel]);
+    
+    // Don't immediately hide the tooltip on mouse leave
+    // Instead, set a timeout to hide it after a delay
+    handleTooltipInteraction(false);
+  }, [drawPreviewPixel, handleTooltipInteraction]);
 
   // Modify handleMouseUp
   const handleMouseUp = async (e: React.MouseEvent) => {
@@ -880,6 +937,19 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     };
   }, [tooltipTimeout]);
 
+  // Add a debounced save function to avoid excessive writes during continuous operations like zooming/panning
+  const debouncedSaveViewState = useCallback(
+    debounce((viewState: ViewState) => {
+      try {
+        localStorage.setItem('canvasViewState', JSON.stringify(viewState));
+        console.log('💾 Canvas: View state saved (debounced)');
+      } catch (error) {
+        console.error('Failed to save canvas view state:', error);
+      }
+    }, 300),
+    []
+  );
+  
   // Optimize render function with useMemo
   const render = useMemo(() => {
     const canvas = canvasRef.current;
@@ -945,9 +1015,15 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       }
 
       ctx.restore();
+      
+      // After successful render, save the view state (debounced)
+      if (!canvasState.isLoading) {
+        debouncedSaveViewState(canvasState.view);
+      }
+      
       needsRender.current = false;
     };
-  }, [canvasState.pixels, canvasState.view, PIXEL_SIZE]);
+  }, [canvasState.pixels, canvasState.view, PIXEL_SIZE, debouncedSaveViewState, canvasState.isLoading]);
 
   // Add RAF loop
   const animate = useCallback(() => {
@@ -983,6 +1059,15 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Request render when view or pixels change
   useEffect(() => {
     needsRender.current = true;
+    
+    // Save view state to localStorage whenever it changes (but not during initial loading)
+    if (!canvasState.isLoading) {
+      try {
+        localStorage.setItem('canvasViewState', JSON.stringify(canvasState.view));
+      } catch (error) {
+        console.error('Failed to save canvas view state:', error);
+      }
+    }
   }, [canvasState.view, canvasState.pixels]);
 
   // Update the fetchBalance function to accept a force parameter and respect profileReady
@@ -1126,7 +1211,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           x: touch.clientX,
           y: touch.clientY
         },
-        dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
+        dragStartPos: { x: canvasState.view.x, y: canvasState.view.y },
+        previewPixel: touchMode === 'place' && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE
+          ? { x, y }
+          : { x: -1, y: -1 } // Clear preview for panning in view mode
       }));
 
       // In place mode, also set up for potential pixel placement if coordinates are valid
@@ -1193,17 +1281,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       const dx = touch.clientX - interactionState.dragStart.x;
       const dy = touch.clientY - interactionState.dragStart.y;
       
-      setCanvasState(prev => ({
-        ...prev,
-        view: {
-          ...prev.view,
-          x: interactionState.dragStartPos.x + dx,
-          y: interactionState.dragStartPos.y + dy
-        }
-      }));
-      
-      // Clear preview pixel if we've dragged more than a few pixels
-      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+      // For view mode, clear preview pixel immediately during any panning
+      if (touchMode === 'view') {
+        // Clear preview pixel
         setInteractionState(prev => ({
           ...prev,
           previewPixel: { x: -1, y: -1 }
@@ -1213,8 +1293,28 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         drawPreviewPixel(-1, -1);
         setHoverData(null);
       }
+      // For place mode, only clear preview pixel if dragged substantially
+      else if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+        setInteractionState(prev => ({
+          ...prev,
+          previewPixel: { x: -1, y: -1 }
+        }));
+        
+        // Also clear visual preview
+        drawPreviewPixel(-1, -1);
+        setHoverData(null);
+      }
+      
+      setCanvasState(prev => ({
+        ...prev,
+        view: {
+          ...prev.view,
+          x: interactionState.dragStartPos.x + dx,
+          y: interactionState.dragStartPos.y + dy
+        }
+      }));
     }
-  }, [interactionState.isDragging, interactionState.dragStart, interactionState.dragStartPos, pinchStart, pinchScale, drawPreviewPixel]);
+  }, [interactionState.isDragging, interactionState.dragStart, interactionState.dragStartPos, pinchStart, pinchScale, drawPreviewPixel, touchMode]);
 
   const handleTouchEnd = useCallback((e: TouchEvent) => {
     e.preventDefault();
@@ -1886,8 +1986,45 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         }
       }
 
-      // Reset view to ensure proper initial positioning
-      resetView();
+      // Try to restore view state from localStorage before resetting
+      try {
+        const savedViewState = localStorage.getItem('canvasViewState');
+        if (savedViewState) {
+          const viewState = JSON.parse(savedViewState);
+          
+          // Validate the view state
+          if (viewState && 
+              typeof viewState.x === 'number' && 
+              typeof viewState.y === 'number' && 
+              typeof viewState.scale === 'number') {
+            
+            // Ensure scale is within acceptable bounds
+            const safeScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, viewState.scale));
+            
+            console.log('🔄 Canvas: Restoring saved view state:', viewState);
+            
+            // Apply the saved view state
+            setCanvasState(prev => ({
+              ...prev,
+              view: {
+                x: viewState.x,
+                y: viewState.y,
+                scale: safeScale
+              }
+            }));
+          } else {
+            // Fall back to reset view if view state is invalid
+            resetView();
+          }
+        } else {
+          // No saved state, use default reset view
+          resetView();
+        }
+      } catch (error) {
+        console.error('Failed to restore canvas view state:', error);
+        // Fall back to reset view on error
+        resetView();
+      }
       
       // Clear any preview pixels
       setInteractionState(prev => ({
@@ -2186,6 +2323,75 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     };
   }, []);
 
+  // Add an effect to load the view state from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedViewState = localStorage.getItem('canvasViewState');
+      if (savedViewState) {
+        const viewState = JSON.parse(savedViewState);
+        
+        // Only apply if it's a valid view state
+        if (viewState && 
+            typeof viewState.x === 'number' && 
+            typeof viewState.y === 'number' && 
+            typeof viewState.scale === 'number') {
+          
+          // Ensure scale is within acceptable bounds
+          const safeScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, viewState.scale));
+          
+          console.log('🔄 Restoring saved canvas view state:', viewState);
+          
+          setCanvasState(prev => ({
+            ...prev,
+            view: {
+              x: viewState.x,
+              y: viewState.y,
+              scale: safeScale
+            }
+          }));
+          
+          // Force a render with the restored view
+          needsRender.current = true;
+        }
+      }
+    } catch (error) {
+      console.error('Failed to restore canvas view state:', error);
+    }
+  }, []);
+
+  // Enhanced useEffect for view state changes - save to localStorage reliably
+  useEffect(() => {
+    // Only save when not in initial loading state and after the canvas is fully initialized
+    if (!canvasState.isLoading && canvasRef.current && needsRender.current) {
+      try {
+        localStorage.setItem('canvasViewState', JSON.stringify(canvasState.view));
+        console.log('💾 Canvas: View state saved to localStorage', {
+          x: Math.round(canvasState.view.x),
+          y: Math.round(canvasState.view.y),
+          scale: canvasState.view.scale.toFixed(2)
+        });
+      } catch (error) {
+        console.error('Failed to save canvas view state:', error);
+      }
+    }
+  }, [canvasState.view, canvasState.isLoading]);
+  
+  // Add an effect to save view state before unmounting 
+  useEffect(() => {
+    return () => {
+      // Final save on unmount - flush any pending debounced saves
+      debouncedSaveViewState.flush();
+      
+      // Also do a direct save to ensure latest state is captured
+      try {
+        localStorage.setItem('canvasViewState', JSON.stringify(canvasState.view));
+        console.log('💾 Canvas: Final view state saved before unmount');
+      } catch (error) {
+        console.error('Failed to save final canvas view state:', error);
+      }
+    };
+  }, [debouncedSaveViewState, canvasState.view]);
+
   return (
     <div 
       ref={containerRef}
@@ -2262,12 +2468,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
               zIndex: 49,
               pointerEvents: 'none'
             }}
-            onMouseEnter={() => {
-              if (window.tooltipTimeout) {
-                clearTimeout(window.tooltipTimeout);
-              }
-              setHoverData(hoverData);
-            }}
           />
           {/* Fixed Position Tooltip */}
           <div 
@@ -2275,15 +2475,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             style={{
               fontFamily: 'var(--font-mono)',
               padding: '12px',
-              pointerEvents: 'none',
+              pointerEvents: 'auto', // Allow interaction with the tooltip
               minWidth: '180px'
             }}
-            onMouseEnter={() => {
-              if (window.tooltipTimeout) {
-                clearTimeout(window.tooltipTimeout);
-              }
-              setHoverData(hoverData);
-            }}
+            onMouseEnter={() => handleTooltipInteraction(true)}
+            onMouseLeave={() => handleTooltipInteraction(false)}
           >
             <div className="flex items-center gap-2 text-xs">
               {hoverData?.pixel?.farcaster_pfp && hoverData.pixel.farcaster_pfp !== 'null' && (
@@ -2299,7 +2495,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
                   />
                 </>
               )}
-              <span className="text-purple-400">
+              <span className={hoverData?.pixel?.farcaster_username && hoverData.pixel.farcaster_username !== 'null' ? "text-purple-400" : "text-blue-400"}>
                 {hoverData?.pixel?.farcaster_username && hoverData.pixel.farcaster_username !== 'null' ? (
                   <a 
                     href={`https://warpcast.com/${hoverData.pixel.farcaster_username}`}
@@ -2315,7 +2511,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
                       href={`https://etherscan.io/address/${hoverData.pixel.wallet_address}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="hover:text-purple-300 transition-colors"
+                      className="hover:text-blue-300 transition-colors"
                     >
                       {`${hoverData.pixel.wallet_address.slice(0, 6)}...${hoverData.pixel.wallet_address.slice(-4)}`}
                     </a>

@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Image from 'next/image';
 import { timeAgo, formatNumber } from '@/lib/timeAgo';
+import { pusherManager } from '@/lib/client/pusherManager';
 
 interface PixelPlacement {
   id: string;
@@ -51,6 +52,25 @@ export default function LogsPage() {
 
   useEffect(() => {
     fetchPlacements(1);
+    
+    // Ensure Pusher connection is maintained when visiting logs page
+    if (!pusherManager.isConnected()) {
+      console.log('🔄 Logs: Reconnecting Pusher');
+      pusherManager.reconnect();
+    }
+    
+    // Set up real-time updates for new pixel placements
+    const handlePixelPlaced = () => {
+      // Refresh the first page when a new pixel is placed
+      fetchPlacements(1);
+    };
+    
+    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+    
+    return () => {
+      // Clean up subscription when leaving the page
+      pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
+    };
   }, []);
 
   if (loading) {

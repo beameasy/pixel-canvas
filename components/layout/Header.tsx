@@ -54,6 +54,17 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
             <Link href="/leaderboard" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Leaderboard</Link>
             <Link href="/about" className="text-[#FFD700] hover:text-[#FFC700] font-mono">About</Link>
             <Link href="/socials" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Socials</Link>
+            <a 
+              href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono flex items-center gap-1"
+            >
+              Discussion
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
             
             {/* Token Dropdown */}
             <div 
@@ -166,6 +177,18 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
             >
               Socials
             </Link>
+            <a 
+              href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono flex items-center gap-1"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Discussion
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
             {/* Mobile Token Links */}
             <div className="space-y-2 pl-2">
               <a 
@@ -175,14 +198,6 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
                 className="block text-blue-400 hover:text-blue-300 font-mono text-sm"
               >
                 $BILLBOARD Contract
-              </a>
-              <a 
-                href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block text-emerald-400 hover:text-emerald-300 font-mono text-sm"
-              >
-                Trade on Clank.fun
               </a>
             </div>
           </nav>

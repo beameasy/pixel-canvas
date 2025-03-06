@@ -46,16 +46,35 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, []);
 
+  // Save a reference to the canvas view state when unmounting
+  useEffect(() => {
+    return () => {
+      // When navigating away from the canvas page, save the current view state if available
+      if (canvasRef.current?.getViewState) {
+        try {
+          const viewState = canvasRef.current.getViewState();
+          if (viewState) {
+            localStorage.setItem('canvasViewState', JSON.stringify(viewState));
+            console.log('💾 Saved canvas view state before navigation');
+          }
+        } catch (error) {
+          console.error('Failed to save canvas view state:', error);
+        }
+      }
+    };
+  }, []);
+
   // Reset canvas view when navigating back to this page
   useEffect(() => {
     // Update the mount key to force a full remount
     setCanvasMountKey(Date.now());
     
-    // Short delay to ensure canvas is fully mounted
+    // Short delay to ensure canvas is fully mounted before trying to use the ref
     const resetTimer = setTimeout(() => {
       if (canvasRef.current) {
-        console.log('🔄 Resetting canvas view after navigation');
-        canvasRef.current.resetView();
+        // The canvas component will automatically restore view state from localStorage
+        // so we don't need to manually set it here
+        console.log('🔄 Canvas component mounted, view state will be auto-restored if available');
       }
     }, 300);
     
