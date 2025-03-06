@@ -42,7 +42,7 @@ export async function GET(request: Request) {
       return new NextResponse(null, {
         status: 304,
         headers: {
-          'Cache-Control': 'public, max-age=15, stale-while-revalidate=30',
+          'Cache-Control': 'public, max-age=5, stale-while-revalidate=10',
           'ETag': etag
         }
       });
@@ -50,7 +50,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json(pixelsArray, {
       headers: {
-        'Cache-Control': 'public, max-age=30, stale-while-revalidate=60',
+        'Cache-Control': 'public, max-age=5, stale-while-revalidate=10',
         'ETag': etag
       }
     });

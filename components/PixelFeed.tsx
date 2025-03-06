@@ -150,9 +150,24 @@ export default function PixelFeed() {
     fetchInitialData();
     pusherManager.subscribe('pixel-placed', handlePixelPlaced);
     
+    // Add visibility change handler
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('🔄 PixelFeed: Tab became visible, checking connection');
+        if (!pusherManager.isConnected()) {
+          console.log('🔄 PixelFeed: Reconnecting Pusher after tab became visible');
+          pusherManager.reconnect();
+          fetchInitialData();
+        }
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
     return () => {
       mounted = false;
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [getAccessToken]);
 

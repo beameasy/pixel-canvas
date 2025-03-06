@@ -48,7 +48,7 @@ export async function GET() {
     // Ensure we return an empty array if no pixels found
     if (!pixels) return NextResponse.json([], {
       headers: {
-        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30'
+        'Cache-Control': 'public, max-age=5, stale-while-revalidate=10'
       }
     });
     
@@ -61,7 +61,7 @@ export async function GET() {
 
     return NextResponse.json(pixelsArray, {
       headers: {
-        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30'
+        'Cache-Control': 'public, max-age=5, stale-while-revalidate=10'
       }
     });
   } catch (error) {
@@ -451,15 +451,32 @@ export async function POST(request: Request) {
 
     // Calculate activity data and include it in Pusher event
     const activitySpikes = await calculateActivitySpikes();
-    await pusher.trigger('canvas', 'pixel-placed', { 
-      pixel: pixelData,
-      topUsers: topUsers,
-      activitySpikes: activitySpikes
-    }).then(() => {
-      console.log('✅ Pusher event sent successfully');
-    }).catch((error) => {
-      console.error('❌ Failed to send Pusher event:', error);
-    });
+
+    // Implement retry logic for Pusher events
+    let retries = 0;
+    const maxRetries = 3;
+
+    async function triggerPusherEventWithRetry() {
+      try {
+        await pusher.trigger('canvas', 'pixel-placed', { 
+          pixel: pixelData,
+          topUsers: topUsers,
+          activitySpikes: activitySpikes
+        });
+        console.log('✅ Pusher event sent successfully');
+      } catch (error) {
+        console.error(`❌ Failed to send Pusher event (attempt ${retries + 1}/${maxRetries}):`, error);
+        if (retries < maxRetries) {
+          retries++;
+          await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+          return triggerPusherEventWithRetry();
+        } else {
+          console.error('❌ All Pusher event retry attempts failed');
+        }
+      }
+    }
+
+    await triggerPusherEventWithRetry();
 
     return NextResponse.json({ success: true, pixel: pixelData }, {
       headers: {

@@ -208,10 +208,26 @@ export default function Ticker() {
         setIsConnected(false);
       }
     }, 30000);
+    
+    // Add visibility change handler
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('🔄 Ticker: Tab became visible, checking connection');
+        if (!pusherManager.isConnected()) {
+          console.log('🔄 Ticker: Reconnecting Pusher after tab became visible');
+          pusherManager.reconnect();
+          initialize();
+          setIsConnected(false);
+        }
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       clearInterval(connectionCheck);
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [getAccessToken]);
 

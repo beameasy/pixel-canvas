@@ -55,7 +55,7 @@ export default function TokenomicsPopup({ isOpen, onClose }: TokenomicsPopupProp
   
   return (
     <div 
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm overflow-y-auto"
+      className="fixed inset-0 z-100 flex items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-sm overflow-y-auto"
       ref={popupRef}
       onClick={(e) => {
         // Prevent click event from propagating when clicking inside the popup content
@@ -66,41 +66,42 @@ export default function TokenomicsPopup({ isOpen, onClose }: TokenomicsPopupProp
       }}
     >
       <div 
-        className="bg-slate-800 border border-slate-700 rounded-lg max-w-2xl w-full max-h-[85vh] overflow-y-auto"
+        className="bg-slate-800 border border-slate-700 rounded-lg max-w-[95vw] sm:max-w-md md:max-w-lg lg:max-w-2xl w-full max-h-[90vh] sm:max-h-[85vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()} // Prevent clicks inside the popup from closing it
       >
-        <div className="sticky top-0 bg-slate-900 p-3 flex justify-between items-center border-b border-slate-700">
-          <h1 className="text-[#FFD700] text-lg font-mono">Welcome to Billboard on Base!</h1>
+        <div className="sticky top-0 z-10 bg-slate-900 px-3 py-2 sm:p-3 flex justify-between items-center border-b border-slate-700">
+          <h1 className="text-[#FFD700] text-base sm:text-lg font-mono">Welcome to Billboard on Base!</h1>
           <button 
             onClick={() => {
               onClose();
               localStorage.setItem('tokenomicsPopupClosed', 'true');
             }}
-            className="text-slate-400 hover:text-white"
+            className="text-slate-400 hover:text-white ml-2"
+            aria-label="Close popup"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="18" y1="6" x2="6" y2="18"></line>
               <line x1="6" y1="6" x2="18" y2="18"></line>
             </svg>
           </button>
         </div>
           
-        <div className="p-6 space-y-4 text-slate-300 font-mono text-xs sm:text-sm">
+        <div className="p-3 sm:p-6 space-y-3 sm:space-y-4 text-slate-300 font-mono text-xs sm:text-sm">
           <p className="mb-2">
             Holding $BILLBOARD tokens provides benefits for pixel placement:
           </p>
           
-          <div className="bg-slate-800/50 p-3 border border-slate-700 rounded-md mb-4">
+          <div className="bg-slate-800/50 p-2 sm:p-3 border border-slate-700 rounded-md mb-3 sm:mb-4">
             <p className="text-emerald-300 mb-2">Protection System:</p>
             <p>
-              When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you currently hold</span> can overwrite your pixel. This helps preserve artwork while still allowing for canvas evolution.
+              When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you currently hold</span> can overwrite your pixel.
             </p>
             <p className="mt-2">
-              <span className="text-amber-300">Dynamic Protection:</span> If you buy more tokens, your pixels immediately gain stronger protection. If you sell tokens, your pixels become more vulnerable to being overwritten. This creates a direct relationship between your token holdings and your ability to maintain your artwork on the canvas.
+              <span className="text-amber-300">Dynamic Protection:</span> If you buy more tokens, your pixels immediately gain stronger protection.
             </p>
           </div>
           
-          <h2 className="text-[#FFD700] text-lg font-mono mb-2 pt-1">$BILLBOARD Token Tiers</h2>
+          <h2 className="text-[#FFD700] text-base sm:text-lg font-mono mb-2 pt-1">$BILLBOARD Token Tiers</h2>
           
           {/* Table header with centered text */}
           <div className="grid grid-cols-3 text-center border-b border-slate-700 py-2">
@@ -140,7 +141,7 @@ export default function TokenomicsPopup({ isOpen, onClose }: TokenomicsPopupProp
             );
           })}
           
-          <div className="flex justify-center mt-6">
+          <div className="flex justify-center mt-4 sm:mt-6">
             <button
               onClick={() => {
                 onClose();

@@ -10,6 +10,7 @@ import FlashMessage from '@/components/ui/FlashMessage';
 import { safeFetch } from '@/lib/client/safeJsonFetch';
 import { TIERS, DEFAULT_TIER } from '@/lib/server/tiers.config';
 import FarcasterLogo from '@/components/ui/FarcasterLogo';
+import { pusherManager } from '@/lib/client/pusherManager';
 
 declare global {
   interface Window {
@@ -120,7 +121,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     isDragging: false,
     dragStart: { x: 0, y: 0 },
     dragStartPos: { x: 0, y: 0 },
-    previewPixel: { x: -1, y: -1 }
+    previewPixel: { x: -1, y: -1 },
+    pinchZooming: false
   });
 
 
@@ -200,7 +202,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add this function to process updates using requestAnimationFrame
   const processPixelUpdates = useCallback(() => {
+    console.log('🔴 Processing pixel updates. Queue length:', pixelUpdateQueue.current.length);
+    
     if (pixelUpdateQueue.current.length === 0) {
+      console.log('🔴 No updates to process. Ending processing cycle.');
       isProcessingUpdates.current = false;
       return;
     }
@@ -209,11 +214,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     
     // Process up to 10 updates per frame
     const updates = pixelUpdateQueue.current.splice(0, 10);
+    console.log('🔴 Processing batch of updates:', updates.length);
     
     setCanvasState(prev => {
       const newPixels = new Map(prev.pixels);
       updates.forEach(update => {
         const key = `${update.x},${update.y}`;
+        console.log('🔴 Adding pixel to canvas:', key, update.color);
+        
         const fullPixel: PixelData = {
           ...update,
           placed_at: new Date().toISOString(),
@@ -230,16 +238,26 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     // Continue processing if more updates exist
     if (pixelUpdateQueue.current.length > 0) {
+      console.log('🔴 More updates to process. Continuing in next frame.');
       requestAnimationFrame(processPixelUpdates);
     } else {
+      console.log('🔴 All updates processed. Ending processing cycle.');
       isProcessingUpdates.current = false;
     }
   }, []);
 
   // Update the queuePixelUpdate function to include required fields
   const queuePixelUpdate = useCallback((pixel: {x: number, y: number, color: string, wallet_address: string}) => {
+    console.log('🔴 Adding pixel to update queue:', pixel);
+    console.log('🔴 Queue length before adding:', pixelUpdateQueue.current.length);
+    
     pixelUpdateQueue.current.push(pixel); // Push the original pixel data
+    
+    console.log('🔴 Queue length after adding:', pixelUpdateQueue.current.length);
+    console.log('🔴 Processing status:', isProcessingUpdates.current);
+    
     if (!isProcessingUpdates.current) {
+      console.log('🔴 Starting pixel update processing');
       requestAnimationFrame(processPixelUpdates);
     }
   }, [processPixelUpdates]);
@@ -283,7 +301,25 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     // Handle real-time updates through RAF queue
     channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
-      if (!pusherConnected || !data.pixel.wallet_address) return;
+      console.log('🔴 Pusher event received:', {
+        event: 'pixel-placed',
+        pixel: data.pixel,
+        pusherConnected,
+        receivedTimestamp: new Date().toISOString()
+      });
+      
+      if (!pusherConnected || !data.pixel.wallet_address) {
+        console.log('🔴 Pusher event ignored - not connected or missing wallet address');
+        return;
+      }
+      
+      console.log('🔴 Queueing pixel update:', {
+        x: data.pixel.x,
+        y: data.pixel.y,
+        color: data.pixel.color,
+        wallet_address: data.pixel.wallet_address
+      });
+      
       queuePixelUpdate({
         x: data.pixel.x,
         y: data.pixel.y,
@@ -302,17 +338,39 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     };
   }, []); // Empty dependency array for single initialization
 
+  // Add this ref for ETag tracking
+  const lastEtag = useRef<string | null>(null);
+  
   // Keep the loadCanvasState function with CDN caching
   const loadCanvasState = useCallback(async (force = false) => {
     try {
+      // Add cache-busting parameter when forcing a fresh load
+      const url = force ? `/api/canvas?t=${Date.now()}` : '/api/canvas';
+      
       const headers: HeadersInit = {
-        'Cache-Control': force ? 'no-cache, no-store' : 'max-age=30',
+        'Cache-Control': force ? 'no-cache, no-store' : 'max-age=60, stale-while-revalidate=600',
+        'Vary': 'Accept-Encoding',
         'Pragma': force ? 'no-cache' : ''
       };
       
-      const response = await fetch('/api/canvas', { headers });
-      if (!response.ok) throw new Error('Failed to load canvas state');
+      // Add If-None-Match only if we're not forcing a refresh
+      if (!force && lastEtag.current) {
+        headers['If-None-Match'] = lastEtag.current;
+      }
       
+      const response = await fetch(url, { headers });
+      
+      // Store ETag for future conditional requests
+      const etag = response.headers.get('ETag');
+      if (etag) {
+        lastEtag.current = etag;
+      }
+      
+      if (!response.ok && response.status !== 304) {
+        throw new Error(`Failed to load canvas state: ${response.status}`);
+      }
+      
+      // Only process body if we got new content (not 304 Not Modified)
       if (response.status !== 304) {
         const data = await response.json();
         setCanvasState(prev => ({
@@ -323,6 +381,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           ])),
           isLoading: false
         }));
+      } else {
+        console.log('Canvas state unchanged (304), using cached version');
       }
     } catch (error) {
       console.error('Failed to load canvas state:', error);
@@ -434,14 +494,35 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     const loadInitial = async () => {
       try {
+        // Draw white background immediately before data loads
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+        }
+        
+        // Then proceed with data loading
+        // Check if user has recently placed a pixel
+        const pixelPlacedAt = localStorage.getItem('pixel_placed_at');
+        const shouldForceRefresh = pixelPlacedAt ? 
+                                   (Date.now() - parseInt(pixelPlacedAt)) < 60000 : false; // Within last minute
+        
         // Start listening for real-time updates before loading full state
         const channel = getCanvasChannel();
         channel.bind('pusher:subscription_succeeded', () => {
           setPusherConnected(true);
         });
+
+        // Then load the full state, forcing refresh if needed
+        await loadCanvasState(shouldForceRefresh); 
         
-        // Then load the full state
-        await loadCanvasState(true); // Force fresh load on initial render
+        // Clear the placed pixel flag if it was used
+        if (shouldForceRefresh) {
+          localStorage.removeItem('pixel_placed_at');
+        }
         
         // Handle subsequent real-time updates
         channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
@@ -939,8 +1020,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         headers: {
           'x-wallet-address': address || '',
           ...(token && { 'x-privy-token': token }),
-          // Add no-cache header when forcing refresh
-          ...(force && { 'Cache-Control': 'no-cache, no-store' })
+          // Use CDN-friendly caching strategy
+          'Cache-Control': force ? 'no-cache, no-store' : 'max-age=15, stale-while-revalidate=60',
+          'Vary': 'x-wallet-address'
         }
       });
       
@@ -1025,7 +1107,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       setInteractionState(prev => ({
         ...prev,
         isDragging: false,
-        dragStart: { x: midX, y: midY }
+        dragStart: { x: midX, y: midY },
+        pinchZooming: true
       }));
     } else if (e.touches.length === 1) {
       const touch = e.touches[0];
@@ -1138,17 +1221,18 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     
     // Only attempt to place a pixel if:
     // 1. We have a preview pixel with valid coordinates
-    // 2. We haven't dragged significantly
-    // 3. We're ending a single touch (not a pinch)
+    // 2. We're ending a single touch (not a pinch)
+    // 3. We're in place mode (important check that was missing)
     if (
       interactionState.previewPixel.x >= 0 && 
       interactionState.previewPixel.x < GRID_SIZE &&
       interactionState.previewPixel.y >= 0 && 
       interactionState.previewPixel.y < GRID_SIZE &&
-      !interactionState.isDragging &&
       e.touches.length === 0 && 
-      e.changedTouches.length === 1
+      e.changedTouches.length === 1 &&
+      touchMode === 'place'
     ) {
+      console.log('Placing pixel on touch end:', interactionState.previewPixel);
       handlePlacePixel(
         interactionState.previewPixel.x,
         interactionState.previewPixel.y,
@@ -1160,10 +1244,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     setInteractionState(prev => ({
       ...prev,
       isDragging: false,
-      previewPixel: { x: -1, y: -1 }
+      previewPixel: { x: -1, y: -1 },
+      pinchZooming: false
     }));
     setPinchStart(0);
-  }, [interactionState.previewPixel, interactionState.isDragging, selectedColor, handlePlacePixel]);
+  }, [interactionState.previewPixel, interactionState.isDragging, selectedColor, handlePlacePixel, touchMode]);
 
   // Add this helper function
   const hexToDecimal = (hex: string) => {
@@ -1653,7 +1738,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         headers: {
           'Content-Type': 'application/json',
           'x-wallet-address': address || '',
-          'x-privy-token': (await getAccessToken()) || ''
+          'x-privy-token': (await getAccessToken()) || '',
+          // Add cache purge headers for CDN
+          'Cache-Control': 'no-cache',
+          'Cache-Purge-Tags': 'canvas_load',
+          'Surrogate-Key': `pixel-${x}-${y}` // For targeted purging of this pixel in the CDN
         },
         body: JSON.stringify({ 
           x, 
@@ -1704,6 +1793,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       // Update with confirmed data from server
       console.log('🎨 Placement succeeded, updating with server data');
       const data = await response.json();
+      
+      try {
+        // Store timestamp of successful pixel placement
+        localStorage.setItem('pixel_placed_at', Date.now().toString());
+      } catch (e) {
+        console.error('Failed to set localStorage:', e);
+      }
+      
       setCanvasState(prev => {
         const newPixels = new Map(prev.pixels);
         newPixels.set(`${x},${y}`, data.pixel);
@@ -1728,13 +1825,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         console.log('🔄 Refreshing token balance after pixel placement');
         fetchBalance(true);
       }, 500); // Small delay to ensure backend has time to set the flag
+     
+      return true;
     } catch (error) {
       console.error('Failed to place pixel:', error);
       setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
       return false;
     }
-    
-    return true;
   };
 
   // Update the canvas initialization effect
@@ -1742,10 +1839,23 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     if (!canvasRef.current || !containerRef.current) return;
 
     const initializeCanvas = () => {
+      // Add debugging to check canvas element
+      const canvasElement = canvasRef.current;
+      console.log('Canvas initialization:', {
+        canvasExists: !!canvasElement,
+        width: canvasElement?.width,
+        height: canvasElement?.height,
+        offsetWidth: canvasElement?.offsetWidth,
+        offsetHeight: canvasElement?.offsetHeight,
+        style: canvasElement?.style,
+        visibility: canvasElement?.style.visibility,
+        display: canvasElement?.style.display
+      });
+      
       // First check if canvasRef.current and containerRef.current exist
       if (!canvasRef.current || !containerRef.current) return;
       
-      const dpr = window.devicePixelRatio || 1;
+    const dpr = window.devicePixelRatio || 1;
       const containerWidth = containerRef.current.offsetWidth || 600;
       
       // Now it's safe to access canvasRef.current since we've checked it's not null
@@ -1757,11 +1867,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       canvasRef.current.style.height = `${containerWidth}px`;
 
       // Scale context
-      const ctx = canvasRef.current.getContext('2d');
-      if (ctx) {
-        ctx.scale(dpr, dpr);
-        ctx.imageSmoothingEnabled = false;
-      }
+    const ctx = canvasRef.current.getContext('2d');
+    if (ctx) {
+      ctx.scale(dpr, dpr);
+      ctx.imageSmoothingEnabled = false;
+    }
 
       // Also initialize overlay canvas - check for null before using
       if (overlayCanvasRef.current) {
@@ -1778,7 +1888,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       }
 
       // Force a redraw
-      needsRender.current = true;
+    needsRender.current = true;
     };
 
     // Initialize immediately
@@ -1863,22 +1973,24 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
+        console.log('🔴 Tab became visible - reconnecting Pusher');
+        
         // Only proceed if both refs are available
         if (!containerRef.current || !canvasRef.current) return;
         
         const dpr = window.devicePixelRatio || 1;
         const containerWidth = containerRef.current.offsetWidth;
-        
+          
         // Now safe to update canvas dimensions
         canvasRef.current.width = containerWidth * dpr;
         canvasRef.current.height = containerWidth * dpr;
-        
+          
         // Reset overlay canvas as well if present
         if (overlayCanvasRef.current) {
           overlayCanvasRef.current.width = containerWidth * dpr;
           overlayCanvasRef.current.height = containerWidth * dpr;
         }
-        
+          
         // Update context and scale
         const ctx = canvasRef.current.getContext('2d');
         if (ctx) {
@@ -1886,23 +1998,53 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           ctx.imageSmoothingEnabled = false;
         }
 
-        // Force refresh canvas state from server
-        loadCanvasState(true);
-        
-        // Restore view state
-        const scale = containerWidth / (GRID_SIZE * PIXEL_SIZE);
-        const centerX = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
-        const centerY = (containerWidth - (GRID_SIZE * PIXEL_SIZE * scale)) / 2;
-        
-        setCanvasState(prev => ({
-          ...prev,
-          view: {
-            x: centerX,
-            y: centerY,
-            scale: scale
+        // Use pusherManager to reconnect instead of direct channel access
+        if (!pusherManager.isConnected()) {
+          console.log('🔴 Reconnecting via pusherManager');
+          pusherManager.reconnect();
+        }
+
+        // Set up the event handler again using pusherManager
+        pusherManager.subscribe('pixel-placed', (data: PixelPlacedEvent) => {
+          console.log('🔴 Pusher event received after reconnect:', {
+            event: 'pixel-placed',
+            pixel: data.pixel
+          });
+          
+          if (!data.pixel.wallet_address) {
+            console.log('🔴 Pusher event ignored - missing wallet address');
+            return;
           }
-        }));
+          
+          queuePixelUpdate({
+            x: data.pixel.x,
+            y: data.pixel.y,
+            color: data.pixel.color,
+            wallet_address: data.pixel.wallet_address
+          });
+        });
+
+        // Ensure we're marked as connected
+        setPusherConnected(true);
         
+        // Check if user has recently placed a pixel
+        const pixelPlacedAt = localStorage.getItem('pixel_placed_at');
+        const shouldForceRefresh = pixelPlacedAt ? 
+                                  (Date.now() - parseInt(pixelPlacedAt)) < 60000 : false;
+        
+        // Load canvas state, force refresh if needed
+        loadCanvasState(shouldForceRefresh);
+        
+        // Clear the placed pixel flag if it was used
+        if (shouldForceRefresh) {
+          localStorage.removeItem('pixel_placed_at');
+        }
+        
+        // Clear any preview pixel
+        drawPreviewPixel(-1, -1);
+        setHoverData(null);
+        onMousePosChange?.(null);
+          
         // Force redraw
         needsRender.current = true;
       }
@@ -1910,7 +2052,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [PIXEL_SIZE, loadCanvasState]);
+  }, [PIXEL_SIZE, loadCanvasState, drawPreviewPixel, onMousePosChange]);
 
   // Add this function to fetch user profiles
   const fetchUserProfile = async (walletAddress: string): Promise<UserProfile | null> => {
@@ -1923,7 +2065,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
     
     try {
-      const response = await fetch(`/api/users/${walletAddress}`);
+      const response = await fetch(`/api/users/${walletAddress}`, {
+        headers: {
+          'Cache-Control': 'max-age=300, stale-while-revalidate=3600',
+          'Vary': 'Accept-Encoding'
+        }
+      });
+      
       if (!response.ok) {
         setUserProfiles(prev => ({
           ...prev,
@@ -1955,6 +2103,79 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       fetchUserProfile(hoverData.pixel.wallet_address);
     }
   }, [hoverData?.pixel?.wallet_address]);
+
+  // Add this single useEffect to handle canvas visibility
+  useEffect(() => {
+    // Set up visibility change handler
+    const visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('Tab became visible, refreshing canvas');
+        // Just set the render flag to trigger a redraw
+        needsRender.current = true;
+      }
+    };
+    
+    document.addEventListener('visibilitychange', visibilityHandler);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', visibilityHandler);
+    };
+  }, []);
+
+  // Add this useEffect to handle tab visibility changes and Pusher reconnection
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible') {
+        console.log('Tab became visible, reconnecting Pusher and refreshing canvas state');
+        
+        // Reconnect Pusher
+        pusherManager.reconnect();
+        
+        // Rebind events directly with pusherManager
+        pusherManager.subscribe('pixel-placed', (data: any) => {
+          const { pixel } = data;
+          if (!pixel) return;
+          
+          // Update local state with the new pixel
+          setCanvasState(prev => ({
+            ...prev,
+            pixels: new Map(prev.pixels).set(`${pixel.x},${pixel.y}`, pixel)
+          }));
+          
+          // Trigger render
+          needsRender.current = true;
+        });
+        
+        // Refresh canvas state by fetching latest pixels
+        try {
+          const response = await fetch('/api/pixels');
+          const data = await response.json();
+          
+          // Update pixels with latest data
+          const pixelMap = new Map();
+          data.forEach((pixel: any) => {
+            pixelMap.set(`${pixel.x},${pixel.y}`, pixel);
+          });
+          
+          // Update state with new pixel data
+          setCanvasState(prev => ({
+            ...prev,
+            pixels: pixelMap,
+            isLoading: false
+          }));
+          
+          needsRender.current = true;
+        } catch (error) {
+          console.error('Failed to reload canvas state:', error);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
 
   return (
     <div 
@@ -2039,18 +2260,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
               setHoverData(hoverData);
             }}
           />
-          {/* Tooltip */}
+          {/* Fixed Position Tooltip */}
           <div 
-            className="absolute bg-neutral-900/90 rounded px-2 py-1 text-xs border border-neutral-700"
+            className="absolute top-[calc(2rem+44px)] right-2 z-50 bg-neutral-900/90 rounded border border-neutral-700"
             style={{
-              left: hoverData.screenX + (PIXEL_SIZE * canvasState.view.scale),
-              top: hoverData.screenY,
               fontFamily: 'var(--font-mono)',
-              zIndex: 50,
-              maxWidth: '200px',
-              padding: '8px',
-              transform: 'translateY(-25%)',
-              pointerEvents: 'auto'
+              padding: '12px',
+              pointerEvents: 'none',
+              minWidth: '180px'
             }}
             onMouseEnter={() => {
               if (window.tooltipTimeout) {
@@ -2058,13 +2275,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
               }
               setHoverData(hoverData);
             }}
-            onMouseLeave={() => {
-              window.tooltipTimeout = setTimeout(() => {
-                setHoverData(null);
-              }, 300);
-            }}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 text-xs">
               {hoverData?.pixel?.farcaster_pfp && (
                 <>
                   <FarcasterLogo className="text-purple-400" size="sm" />
@@ -2102,29 +2314,61 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
                 )}
               </span>
             </div>
-            <div className="text-neutral-400 mt-1">
+            
+            <div className="text-neutral-400 mt-1 text-xs">
               {hoverData.x}, {hoverData.y}
             </div>
-            <div className="text-neutral-500 mt-0.5">
-              {hoverData?.pixel?.placed_at && formatTimeSince(hoverData.pixel.placed_at)} ago
+            
+            <div className="text-neutral-500 mt-0.5 text-xs">
+              {formatTimeSince(hoverData.pixel.placed_at)} ago
             </div>
-            {/* Tooltip balance */}
-            <div className="text-amber-400 mt-0.5">
+            
+            {/* Tooltip balance - styling like in the screenshot */}
+            <div className="text-yellow-400 text-xs">
               {hoverData?.pixel?.wallet_address && userProfiles[hoverData.pixel.wallet_address] ? 
-                `${formatBillboardAmount(userProfiles[hoverData.pixel.wallet_address].profile?.token_balance ?? 0)} $BILLBOARD (current)` : 
+                formatBillboardAmount(userProfiles[hoverData.pixel.wallet_address].profile?.token_balance ?? 0) : 
                 hoverData?.pixel?.token_balance ? 
-                `${formatBillboardAmount(hoverData.pixel.token_balance)} $BILLBOARD (at placement)` :
-                '0 $BILLBOARD'
+                formatBillboardAmount(hoverData.pixel.token_balance) :
+                '0'
               }
             </div>
+            
+            <div className="text-yellow-400 text-xs">$BILLBOARD</div>
+            
+            {hoverData?.pixel?.wallet_address && userProfiles[hoverData.pixel.wallet_address] && (
+              <div className="text-yellow-400 text-xs">(current)</div>
+            )}
+            
             {hoverData?.pixel?.locked_until && Number(hoverData.pixel.locked_until) > Date.now() && (
-              <div className="text-yellow-400 mt-0.5">
+              <div className="text-yellow-400 mt-0.5 text-xs">
                 🔒 Locked for {formatTimeSince(new Date(Number(hoverData.pixel.locked_until)).toISOString())}
+              </div>
+            )}
+            
+            {hoverData?.pixel?.version !== undefined && (
+              <div className="text-neutral-500 text-xs mt-0.5">
+                v{hoverData.pixel.version}
               </div>
             )}
           </div>
         </>
       )}
+      
+      {/* Simple coordinates tooltip when hovering empty pixels */}
+      {hoverData && !hoverData.pixel && (
+        <div 
+          className="absolute top-[calc(2rem+44px)] right-2 z-50 bg-neutral-900/90 rounded px-3 py-1.5 text-xs font-mono border border-neutral-700"
+          style={{
+            fontFamily: 'var(--font-mono)',
+            pointerEvents: 'none'
+          }}
+        >
+          <div className="text-neutral-400">
+            Empty pixel: {hoverData.x}, {hoverData.y}
+          </div>
+        </div>
+      )}
+      
       {!canvasState.isLoading && !isSmallScreen && windowSize.width > 0 && (
         <div className="absolute bottom-4 right-4 z-50">
           <Minimap
@@ -2160,7 +2404,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             ? (isSmallScreen ? 'Ready!' : 'Ready to place!') 
             : isSmallScreen 
               ? `${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`
-              : `Next Pixel: ${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`}
+            : `Next Pixel: ${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`}
         </div>
       </div>
     </div>

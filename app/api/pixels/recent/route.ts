@@ -25,7 +25,7 @@ export async function GET() {
       cooldownInfo: null
     }, {
       headers: {
-        'Cache-Control': 'public, s-maxage=10, stale-while-revalidate=30'
+        'Cache-Control': 'public, max-age=5, stale-while-revalidate=10'
       }
     });
   } catch (error) {
