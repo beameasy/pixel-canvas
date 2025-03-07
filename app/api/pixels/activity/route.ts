@@ -5,13 +5,13 @@ export const revalidate = 10; // More frequent revalidation for real-time activi
 
 export async function GET() {
   try {
-    // Define our activity windows
+    // Define our activity windows with tripled thresholds to match /api/pixels/route.ts
     const windows = [
-      { minutes: 1, threshold: 10, intensity: 1 },     // 10+ pixels in 1 minute
-      { minutes: 3, threshold: 30, intensity: 2 },     // 30+ pixels in 3 minutes  
-      { minutes: 5, threshold: 60, intensity: 3 },     // 60+ pixels in 5 minutes
-      { minutes: 10, threshold: 100, intensity: 4 },   // 100+ pixels in 10 minutes
-      { minutes: 15, threshold: 200, intensity: 5 }    // 200+ pixels in 15 minutes
+      { minutes: 1, threshold: 30, intensity: 1 },     // Was 10
+      { minutes: 3, threshold: 90, intensity: 2 },     // Was 30
+      { minutes: 5, threshold: 180, intensity: 3 },    // Was 60
+      { minutes: 10, threshold: 300, intensity: 4 },   // Was 100
+      { minutes: 15, threshold: 600, intensity: 5 }    // Was 200
     ];
     
     const now = Date.now();
@@ -41,7 +41,7 @@ export async function GET() {
       // Only include windows that exceed the threshold
       if (count >= window.threshold) {
         return {
-          count: window.threshold,
+          count: count,
           timeWindow: window.minutes,
           intensity: window.intensity
         };

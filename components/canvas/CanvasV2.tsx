@@ -567,6 +567,16 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       }
       
       try {
+        // Check if we need to force a balance refresh after wallet connection
+        const forceRefresh = localStorage.getItem('force_balance_refresh') === 'true';
+        if (forceRefresh) {
+          // Clear the flag immediately
+          localStorage.removeItem('force_balance_refresh');
+          // Use existing fetchBalance function with force=true
+          fetchBalance(true);
+          return;
+        }
+        
         // Now this will only run after profile is created
         const token = await getAccessToken();
         
@@ -957,7 +967,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     debounce((viewState: ViewState) => {
       try {
         localStorage.setItem('canvasViewState', JSON.stringify(viewState));
-        logger.log('💾 Canvas: View state saved (debounced)');
+        // Remove view state logging
+        // logger.log('💾 Canvas: View state saved (debounced)');
       } catch (error) {
         logger.error('Failed to save canvas view state:', error);
       }
@@ -1134,23 +1145,90 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       lastBalanceFetchTime.current = now; // Update the timestamp
       
       if (data.balance !== undefined) {
+        const oldBalance = userProfile?.token_balance;
+        const newBalance = Number(data.balance);
+        
+        // Update the user profile
         setUserProfile(prev => ({
           farcaster_username: prev?.farcaster_username ?? null,
           farcaster_pfp: prev?.farcaster_pfp ?? null,
-          token_balance: Number(data.balance),
+          token_balance: newBalance,
           last_active: prev?.last_active ?? undefined,
           updated_at: prev?.updated_at ?? undefined
         }));
+        
+        // Also update the userProfiles cache for the current user to ensure tooltip shows current balance
+        if (address) {
+          setUserProfiles(prev => ({
+            ...prev,
+            [address.toLowerCase()]: { 
+              profile: {
+                farcaster_username: userProfile?.farcaster_username ?? null,
+                farcaster_pfp: userProfile?.farcaster_pfp ?? null,
+                token_balance: newBalance,
+                last_active: userProfile?.last_active ?? undefined,
+                updated_at: now.toString()
+              }, 
+              lastFetched: now 
+            }
+          }));
+        }
+        
         logger.log('🔵 Balance updated:', {
-          new: Number(data.balance),
-          old: userProfile?.token_balance,
+          new: newBalance,
+          old: oldBalance,
           timestamp: now
         });
+
+        // Force a refresh of the cooldown calculation if balance changed and we're in cooldown
+        if (nextPlacementTime && nextPlacementTime > now) {
+          // Get the last pixel placement time 
+          const lastPlacedTimestamp = localStorage.getItem('last_pixel_placed_at');
+          let lastPlacementTime;
+          
+          if (lastPlacedTimestamp) {
+            // Use stored timestamp if available
+            lastPlacementTime = parseInt(lastPlacedTimestamp);
+          } else {
+            // If not available, estimate based on current cooldown
+            const oldTier = getClientTier(oldBalance || 0);
+            const oldCooldownMs = oldTier.cooldownSeconds * 1000;
+            lastPlacementTime = nextPlacementTime - oldCooldownMs;
+          }
+          
+          // Calculate new cooldown based on current balance
+          const currentTier = getClientTier(newBalance);
+          const newCooldownMs = currentTier.cooldownSeconds * 1000;
+          const newNextPlacementTime = lastPlacementTime + newCooldownMs;
+          
+          // Update if different (regardless of shorter or longer)
+          if (newNextPlacementTime !== nextPlacementTime) {
+            logger.log('🕒 Cooldown recalculated after balance fetch:', {
+              oldBalance,
+              newBalance,
+              oldCooldown: (nextPlacementTime - lastPlacementTime) / 1000,
+              newCooldown: newCooldownMs / 1000,
+              lastPlacementTime: new Date(lastPlacementTime).toISOString(),
+              newNextPlacementTime: new Date(newNextPlacementTime).toISOString()
+            });
+            
+            setNextPlacementTime(newNextPlacementTime);
+            localStorage.setItem('nextPlacementTime', newNextPlacementTime.toString());
+            
+            // Force a re-render of the tooltip status if we have hover data
+            const currentHoverData = hoverData;
+            if (currentHoverData) {
+              // Force refresh of hover data to update tooltip
+              setHoverData(null);
+              setTimeout(() => setHoverData(currentHoverData), 0);
+            }
+          }
+        }
       }
     } catch (error) {
       logger.error('Failed to fetch balance:', error);
     }
-  }, [authenticated, profileReady, address, user?.id, getAccessToken, isBanned]);
+  }, [authenticated, profileReady, address, user?.id, getAccessToken, isBanned, userProfile, nextPlacementTime, hoverData, setUserProfile, setUserProfiles, setHoverData, setNextPlacementTime]);
 
   // Add this function to ensure we're using the latest balance for tier calculation
   const getCurrentTier = useCallback(() => {
@@ -1973,7 +2051,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       
       try {
         // Store timestamp of successful pixel placement
-        localStorage.setItem('pixel_placed_at', Date.now().toString());
+        const placementTime = Date.now();
+        localStorage.setItem('pixel_placed_at', placementTime.toString());
+        
+        // Also store the actual placement timestamp for cooldown calculations
+        localStorage.setItem('last_pixel_placed_at', placementTime.toString());
       } catch (e) {
         logger.error('Failed to set localStorage:', e);
       }
@@ -2079,7 +2161,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             // Ensure scale is within acceptable bounds
             const safeScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, viewState.scale));
             
-            logger.log('🔄 Canvas: Restoring saved view state:', viewState);
+            // Remove view state logging
+            // logger.log('🔄 Canvas: Restoring saved view state:', viewState);
             
             // Apply the saved view state
             setCanvasState(prev => ({
@@ -2464,11 +2547,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     if (!canvasState.isLoading && canvasRef.current && needsRender.current) {
       try {
         localStorage.setItem('canvasViewState', JSON.stringify(canvasState.view));
-        logger.log('💾 Canvas: View state saved to localStorage', {
-          x: Math.round(canvasState.view.x),
-          y: Math.round(canvasState.view.y),
-          scale: canvasState.view.scale.toFixed(2)
-        });
+        // Remove view state logging
+        // logger.log('💾 Canvas: View state saved to localStorage', {
+        //   x: Math.round(canvasState.view.x),
+        //   y: Math.round(canvasState.view.y),
+        //   scale: canvasState.view.scale.toFixed(2)
+        // });
       } catch (error) {
         logger.error('Failed to save canvas view state:', error);
       }
@@ -2484,7 +2568,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       // Also do a direct save to ensure latest state is captured
       try {
         localStorage.setItem('canvasViewState', JSON.stringify(canvasState.view));
-        logger.log('💾 Canvas: Final view state saved before unmount');
+        // Remove view state logging
+        // logger.log('💾 Canvas: Final view state saved before unmount');
       } catch (error) {
         logger.error('Failed to save final canvas view state:', error);
       }
@@ -2509,10 +2594,17 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       return { canPlace: false, reason: "Your wallet has been banned", hasHtml: false, needsTokens: false };
     }
 
-    // Check if we're in cooldown period
+    // Check if we're in cooldown period - use the latest nextPlacementTime
     if (nextPlacementTime && Date.now() < nextPlacementTime) {
       const secondsLeft = Math.ceil((nextPlacementTime - Date.now()) / 1000);
-      return { canPlace: false, reason: `Cooldown: wait ${secondsLeft}s`, hasHtml: false, needsTokens: false };
+      // Get the current cooldown duration for better info
+      const currentTier = getCurrentTier();
+      return { 
+        canPlace: false, 
+        reason: `Cooldown: wait ${secondsLeft}s (${currentTier.cooldownSeconds}s cooldown)`, 
+        hasHtml: false, 
+        needsTokens: false 
+      };
     }
 
     // Get existing pixel data if any
@@ -2641,12 +2733,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   useEffect(() => {
     logger.log('Setting up Pusher subscription for real-time updates');
     
-    // Subscribe to pixel-placed events
-    pusherManager.subscribe('pixel-placed', handleRealTimePixelUpdate);
+    // Subscribe to pixel-placed events with component ID
+    pusherManager.subscribe('pixel-placed', handleRealTimePixelUpdate, 'canvas-component');
     
     // Cleanup on unmount
     return () => {
-      pusherManager.unsubscribe('pixel-placed', handleRealTimePixelUpdate);
+      pusherManager.unsubscribe('pixel-placed', handleRealTimePixelUpdate, 'canvas-component');
     };
   }, [handleRealTimePixelUpdate]);
 
@@ -2662,8 +2754,8 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         // Set the render flag to trigger a redraw immediately
         needsRender.current = true;
         
-        // Reconnect Pusher on visibility change
-        pusherManager.reconnect();
+        // Reconnect Pusher on visibility change - already handled by PusherManager's own visibility handler
+        // pusherManager.reconnect();
         
         // Only fetch new data if we've been away for a while
         const now = Date.now();
@@ -2713,6 +2805,91 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       document.removeEventListener('visibilitychange', visibilityHandler);
     };
   }, []);
+
+  // Add this useEffect to update cooldown when token balance changes
+  useEffect(() => {
+    if (!userProfile?.token_balance || !nextPlacementTime) return;
+    
+    // Skip this if we're already past the cooldown
+    const currentTime = Date.now();
+    if (currentTime >= nextPlacementTime) return;
+    
+    // Get the current tier based on updated balance
+    const currentTier = getCurrentTier();
+    const newCooldownMs = currentTier.cooldownSeconds * 1000;
+    
+    // Find when the last pixel was placed by looking at localStorage
+    const lastPlacedTimestamp = localStorage.getItem('last_pixel_placed_at');
+    const lastPlacementTime = lastPlacedTimestamp ? parseInt(lastPlacedTimestamp) : (nextPlacementTime - newCooldownMs);
+    
+    // Calculate new cooldown time based on the updated tier
+    const newNextPlacementTime = lastPlacementTime + newCooldownMs;
+    
+    // Important: Update the cooldown regardless of whether it's shorter or longer
+    // This ensures the UI always shows the correct countdown based on current balance
+    if (newNextPlacementTime !== nextPlacementTime) {
+      const oldCooldownMs = nextPlacementTime - lastPlacementTime;
+      
+      logger.log('🕒 Cooldown updated due to token balance change:', {
+        balance: userProfile.token_balance,
+        oldCooldownSeconds: oldCooldownMs / 1000,
+        newCooldownSeconds: newCooldownMs / 1000,
+        lastPlacementTime: new Date(lastPlacementTime).toISOString(),
+        newNextPlacementTime: new Date(newNextPlacementTime).toISOString()
+      });
+      
+      // Update the cooldown
+      setNextPlacementTime(newNextPlacementTime);
+      localStorage.setItem('nextPlacementTime', newNextPlacementTime.toString());
+      
+      // Force refresh tooltip if applicable
+      const currentHoverData = hoverData;
+      if (currentHoverData) {
+        setHoverData(null);
+        setTimeout(() => setHoverData(currentHoverData), 0);
+      }
+    }
+  }, [userProfile?.token_balance, nextPlacementTime, getCurrentTier, hoverData, setHoverData]);
+
+  // Add this function to refresh cooldown timer based on current balance
+  const refreshCooldownTimer = useCallback(() => {
+    const now = Date.now();
+    // Skip if we're not in cooldown
+    if (!nextPlacementTime || nextPlacementTime <= now) return;
+    
+    // Get the timestamp of last pixel placement
+    const lastPlacedTimestamp = localStorage.getItem('last_pixel_placed_at');
+    if (!lastPlacedTimestamp) return;
+    
+    const lastPlacementTime = parseInt(lastPlacedTimestamp);
+    
+    // Get the current tier and its cooldown
+    const currentTier = getCurrentTier();
+    const cooldownMs = currentTier.cooldownSeconds * 1000;
+    
+    // Calculate what the next placement time should be
+    const calculatedNextTime = lastPlacementTime + cooldownMs;
+    
+    // Only update if different from current time
+    if (calculatedNextTime !== nextPlacementTime) {
+      logger.log('🕒 Refreshing cooldown timer:', {
+        oldNextTime: new Date(nextPlacementTime).toISOString(),
+        newNextTime: new Date(calculatedNextTime).toISOString(),
+        cooldownSeconds: currentTier.cooldownSeconds,
+        tierName: currentTier.name
+      });
+      
+      setNextPlacementTime(calculatedNextTime);
+      localStorage.setItem('nextPlacementTime', calculatedNextTime.toString());
+    }
+  }, [nextPlacementTime, getCurrentTier, setNextPlacementTime]);
+
+  // Call refreshCooldownTimer whenever userProfile.token_balance changes
+  useEffect(() => {
+    if (userProfile?.token_balance !== undefined) {
+      refreshCooldownTimer();
+    }
+  }, [userProfile?.token_balance, refreshCooldownTimer]);
 
   return (
     <div 
@@ -2989,6 +3166,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       )}
       {/* Status UI - more compact on mobile */}
       <div className="absolute top-2 right-2 z-50 bg-neutral-900/90 rounded-lg px-2 py-1 text-xs font-mono flex flex-col items-end gap-0.5">
+        {/* Token balance display */}
         <div className="flex items-center">
           <div className="text-amber-400 flex-grow whitespace-nowrap">
             {formatBillboardAmount(userProfile?.token_balance || 0)}{isSmallScreen ? ' BB' : ' $BILLBOARD'}
@@ -3001,12 +3179,23 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             ↻
           </button>
         </div>
-        <div className={`${!nextPlacementTime ? 'text-green-400' : 'text-neutral-400'} text-[10px] leading-tight`}>
+        {/* Cooldown timer display */}
+        <div className={`${!nextPlacementTime ? 'text-green-400' : 'text-neutral-400'} text-[10px] leading-tight flex items-center`}>
           {!nextPlacementTime 
             ? (isSmallScreen ? 'Ready!' : 'Ready to place!') 
             : isSmallScreen 
               ? `${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`
-            : `Next Pixel: ${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`}
+              : `Next Pixel: ${Math.max(0, Math.ceil((nextPlacementTime - Date.now()) / 1000))}s`}
+          
+          {nextPlacementTime && nextPlacementTime > Date.now() && (
+            <button 
+              onClick={refreshCooldownTimer} 
+              className="ml-1 text-neutral-500 hover:text-neutral-300 transition-colors text-[8px]"
+              title="Refresh cooldown timer"
+            >
+              ↻
+            </button>
+          )}
         </div>
       </div>
     </div>

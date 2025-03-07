@@ -190,6 +190,9 @@ export default function Home() {
         
         setProfileReady(true);
         
+        // Add a flag in localStorage to signal that the balance should be refreshed
+        localStorage.setItem('force_balance_refresh', 'true');
+        
         setTimeout(() => {
           logger.log("🔄 Pusher reconnection initiated after profile setup");
           pusherManager.reconnect();

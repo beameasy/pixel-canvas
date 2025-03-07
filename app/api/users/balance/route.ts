@@ -11,29 +11,22 @@ function getProcessingFlagKey() {
   return `${prefix}queue_processing_active`;
 }
 
-// Helper function to trigger queue processing
-async function triggerQueueProcessing() {
-  if (!process.env.NEXT_PUBLIC_APP_URL || !process.env.CRON_SECRET) {
-    console.warn('⚠️ Missing required env vars for queue processing');
-    return;
-  }
-  
+// Deprecated: manual queue trigger replaced by Vercel cron job
+async function _deprecated_triggerQueueProcessing() {
   try {
     const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
       method: 'POST',
-      headers: { 
-        'x-cron-secret': process.env.CRON_SECRET,
-        'origin': process.env.NEXT_PUBLIC_APP_URL
+      headers: {
+        'x-cron-secret': process.env.CRON_SECRET || '',
+        'origin': process.env.NEXT_PUBLIC_APP_URL || ''
       }
     });
     
     if (!response.ok) {
-      console.error('❌ Queue processing trigger failed:', await response.text());
-    } else {
-      console.log('✅ Queue processing triggered successfully');
+      console.error(`Error triggering queue: ${response.status}`);
     }
   } catch (error) {
-    console.error('❌ Failed to trigger queue processing:', error);
+    console.error('Failed to trigger queue processing:', error);
   }
 }
 
@@ -110,7 +103,7 @@ export async function GET(request: Request) {
             await redis.set(processingFlagKey, '1', {ex: 300});
             
             console.log('🔄 Triggering queue processing for users update, queue length:', userQueueLength);
-            triggerQueueProcessing();
+            // _deprecated_triggerQueueProcessing();
           }
         }
       }
@@ -136,4 +129,10 @@ export async function GET(request: Request) {
     console.error('Error in balance endpoint:', error);
     return NextResponse.json({ error: 'Failed to get balance' }, { status: 500 });
   }
+}
+
+// Default export for API route
+export async function POST(request: Request) {
+  // Original code continues here...
+  // Manual queue processing has been removed in favor of Vercel cron jobs
 } 

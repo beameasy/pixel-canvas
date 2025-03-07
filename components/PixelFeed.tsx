@@ -89,66 +89,67 @@ export default function PixelFeed() {
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
+    let mounted = true;
+    
     const checkMobile = () => {
-      setIsMobile(window.innerWidth < 640); // sm breakpoint
+      setIsMobile(window.innerWidth < 640);
     };
     
     checkMobile();
     window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
-
-  useEffect(() => {
-    let mounted = true;
-
+    
     const handlePixelPlaced = (data: { pixel: PixelPlacement }) => {
       if (!mounted) return;
+      
+      const newPlacement = data.pixel;
       setPlacements(prev => {
-        if (prev.some(p => p.id === data.pixel.id)) {
+        // Check for duplicates before adding
+        if (prev.some(p => p.id === newPlacement.id)) {
           return prev;
         }
-        return [data.pixel, ...prev].slice(0, 6);
+        return [newPlacement, ...prev].slice(0, 6); // Limit to 6 items
       });
     };
-
+    
     const fetchInitialData = async () => {
-      if (!mounted) return;
       try {
         const token = await getAccessToken();
+        
+        // Use original endpoint that returns pixel history
         const response = await fetch('/api/pixels/history?limit=6', {
-          cache: 'no-cache',
           headers: {
             'Cache-Control': 'no-cache',
             'x-privy-token': token || ''
           }
         });
         
-        if (!response.ok) throw new Error('Failed to fetch');
-        
-        const history = await response.json();
-        if (!mounted) return;
-        
-        const recentPixels = history
-          .map((pixel: string | PixelPlacement) => 
-            typeof pixel === 'string' ? JSON.parse(pixel) : pixel
-          )
-          .filter((pixel: PixelPlacement, index: number, self: PixelPlacement[]) => 
-            index === self.findIndex((p) => p.id === pixel.id)
-          );
-        setPlacements(recentPixels);
+        if (response.ok) {
+          const history = await response.json();
+          if (mounted) {
+            const recentPixels = history
+              .map((pixel: string | PixelPlacement) => 
+                typeof pixel === 'string' ? JSON.parse(pixel) : pixel
+              )
+              .filter((pixel: PixelPlacement, index: number, self: PixelPlacement[]) => 
+                index === self.findIndex((p) => p.id === pixel.id)
+              );
+            setPlacements(recentPixels);
+          }
+        }
       } catch (error) {
         console.error('Failed to fetch recent pixels:', error);
       }
     };
 
-    // Check connection and force reconnect if needed
+    // Check connection and force reconnect if needed - using componentId
     if (!pusherManager.isConnected()) {
       console.log('🔄 PixelFeed: Reconnecting Pusher');
       pusherManager.reconnect();
     }
 
     fetchInitialData();
-    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+    // Add componentId 'pixel-feed' to track this component's subscription
+    pusherManager.subscribe('pixel-placed', handlePixelPlaced, 'pixel-feed');
     
     // Add visibility change handler
     const handleVisibilityChange = () => {
@@ -166,7 +167,8 @@ export default function PixelFeed() {
     
     return () => {
       mounted = false;
-      pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
+      // Add componentId when unsubscribing
+      pusherManager.unsubscribe('pixel-placed', handlePixelPlaced, 'pixel-feed');
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [getAccessToken]);

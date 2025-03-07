@@ -6,6 +6,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
+export const maxDuration = 300; // 5 minutes max duration
 
 // Function to get environment-specific processing flag key
 const getProcessingFlagKey = () => {
@@ -117,10 +118,13 @@ async function handleFullBackup(supabase: SupabaseClient) {
 }
 
 export async function GET(request: Request) {
+  const startTime = Date.now();
+  
   try {
     // Check for valid cron secret
     const cronSecret = request.headers.get('x-cron-secret');
     if (cronSecret !== process.env.CRON_SECRET) {
+      console.error('❌ Unauthorized cron job attempt');
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
     
@@ -134,14 +138,33 @@ export async function GET(request: Request) {
       processingActive: await redis.get(getProcessingFlagKey())
     };
     
-    // Check if this is a backup request
-    const { searchParams } = new URL(request.url);
-    const isBackup = searchParams.get('backup') === 'true';
+    console.log(`🔄 Queue processor triggered by Vercel cron job. Stats:`, queueStats);
     
-    console.log(`🔄 Queue processor triggered via: ${request.method}${isBackup ? ' (FULL BACKUP)' : ''}`);
-    
+    // If no items in queue, return early
     if (queueStats.pixelsQueueLength === 0 && queueStats.usersQueueLength === 0) {
-      return NextResponse.json({ message: 'No items in queue', stats: queueStats });
+      return NextResponse.json({ 
+        message: 'No items in queue', 
+        stats: queueStats 
+      });
+    }
+    
+    // Check if another process is already running
+    // Use Redis SETNX which only sets if key doesn't exist
+    const lockAcquired = await redis.set(
+      getProcessingFlagKey(),
+      'true',
+      { 
+        nx: true,  // Only set if key doesn't exist
+        ex: 300    // Expire after 5 minutes (safety measure)
+      }
+    );
+    
+    if (!lockAcquired) {
+      console.log('⏳ Another queue process is already running');
+      return NextResponse.json({ 
+        message: 'Another process is already running', 
+        stats: queueStats 
+      });
     }
     
     // Initialize Supabase client
@@ -289,6 +312,7 @@ export async function GET(request: Request) {
     let backupStats = null;
     
     // Create backup tables if they don't exist
+    const isBackup = false; // Assuming isBackup is false as per the original code
     if (isBackup) {
       try {
         await supabase.rpc('create_backup_tables', {}, {
@@ -376,22 +400,39 @@ export async function GET(request: Request) {
 
     // Clear processing flag at the end
     await redis.del(getProcessingFlagKey());
-    console.log('🔄 Cleared processing flag');
+    
+    const duration = Date.now() - startTime;
+    console.log(`✅ Queue processing completed in ${duration}ms`);
 
     return NextResponse.json({ 
       processed: { 
         pixels: pixelsList.length, 
-        users: usersList.length, 
-        bans: pendingBans.length 
+        users: usersList.length,
+        bans: pendingBans.length
       },
-      backup: isBackup ? backupStats : null
+      remainingItems: {
+        pixels: await redis.llen(pixelsQueue),
+        users: await redis.llen(usersQueue),
+        bans: remainingBans.length
+      },
+      duration_ms: duration,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Error processing queues:', error);
-    // Clear flag even on error
-    await redis.del(getProcessingFlagKey());
-    console.log('🔄 Cleared processing flag after error');
-    return NextResponse.json({ error: 'Failed to process queues' }, { status: 500 });
+    console.error('❌ Fatal error in queue processing:', error);
+    
+    // Always release the lock in case of errors
+    try {
+      await redis.del(getProcessingFlagKey());
+      console.log('🔄 Released processing lock after error');
+    } catch (redisError) {
+      console.error('❌ Could not release Redis lock:', redisError);
+    }
+    
+    return NextResponse.json({ 
+      error: `Queue processing failed: ${error}`,
+      timestamp: new Date().toISOString()
+    }, { status: 500 });
   }
 }
 

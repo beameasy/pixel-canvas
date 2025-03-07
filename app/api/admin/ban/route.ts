@@ -49,7 +49,9 @@ export async function POST(request: Request) {
       }));
     }
     
-    // Trigger queue processing if enabled
+    // Vercel cron job will handle queue processing
+    // Remove manual trigger for consistency
+    /*
     if (process.env.NEXT_PUBLIC_APP_URL && process.env.CRON_SECRET) {
       try {
         const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
@@ -59,7 +61,6 @@ export async function POST(request: Request) {
             'origin': process.env.NEXT_PUBLIC_APP_URL
           }
         });
-
         if (!response.ok) {
           console.error('Failed to trigger queue processing:', await response.text());
         }
@@ -67,6 +68,7 @@ export async function POST(request: Request) {
         console.error('Error triggering queue processing:', error);
       }
     }
+    */
 
     return NextResponse.json({ success: true });
   } catch (error) {

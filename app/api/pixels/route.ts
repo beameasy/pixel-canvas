@@ -240,8 +240,8 @@ function getProcessingFlagKey() {
   return `${prefix}queue_processing_active`;
 }
 
-// Helper function with retries
-async function triggerQueueProcessing(retries = 3) {
+// Helper function with retries - deprecated with Vercel cron
+async function _deprecated_triggerQueueProcessing(retries = 3) {
   try {
     const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
       method: 'POST',
@@ -255,11 +255,12 @@ async function triggerQueueProcessing(retries = 3) {
     console.error('Queue trigger failed:', error);
     if (retries > 0) {
       await new Promise(resolve => setTimeout(resolve, 2000));
-      return triggerQueueProcessing(retries - 1);
+      return _deprecated_triggerQueueProcessing(retries - 1);
     }
   }
 }
 
+// The actual POST method implementation
 export async function POST(request: Request) {
   try {
     const session = await authenticateUser(request);
@@ -282,7 +283,7 @@ export async function POST(request: Request) {
     
     // If balance is null, refresh it
     let balance = user?.token_balance;
-    if (balance === null) {
+    if (balance === null || balance === undefined) {
       balance = Number(await getBillboardBalance(walletAddress));
       const updatedUserData = {
         ...user,
@@ -297,6 +298,22 @@ export async function POST(request: Request) {
       // Queue updated user data for Supabase
       const usersQueue = getQueueName('supabase:users:queue');
       await redis.rpush(usersQueue, JSON.stringify(updatedUserData));
+    }
+    
+    // Always get fresh balance from blockchain for cooldown calculation
+    // This ensures that if a user just purchased tokens, they get the benefit immediately
+    if (!isAdmin) {
+      try {
+        const freshBalance = Number(await getBillboardBalance(walletAddress));
+        // If fresh balance is higher than cached, use it
+        if (freshBalance > balance) {
+          console.log(`🔵 User ${walletAddress} balance updated from ${balance} to ${freshBalance} for cooldown calculation`);
+          balance = freshBalance;
+        }
+      } catch (error) {
+        console.error("Error fetching fresh balance:", error);
+        // Continue with cached balance if there's an error
+      }
     }
 
     // Balance-based cooldown check (skip for admins)
@@ -418,51 +435,11 @@ export async function POST(request: Request) {
     await multi.exec();
 
     console.log('📊 Queue stats:', {
-      pixelQueueLength: await redis.llen(pixelsQueue),
-      userQueueLength: await redis.llen(getQueueName('supabase:users:queue')),
-      hasCronSecret: !!process.env.CRON_SECRET
+      pixels: await redis.llen(pixelsQueue)
     });
-
-    // Trigger queue processing if either queue has enough items
-    const pixelQueueLength = await redis.llen(pixelsQueue);
-    const userQueueLength = await redis.llen(getQueueName('supabase:users:queue'));
-
-    console.log('📊 Queue stats:', {
-      pixelQueueLength,
-      userQueueLength,
-      hasCronSecret: !!process.env.CRON_SECRET
-    });
-
-    // Process if either queue has enough items
-    if (pixelQueueLength >= 10 || userQueueLength >= 10) {
-      // Check if processing is already active with environment-specific key
-      const processingFlagKey = getProcessingFlagKey();
-      const processingActive = await redis.get(processingFlagKey);
-      
-      if (!processingActive) {
-        // Set processing flag with 5 minute expiry
-        await redis.set(processingFlagKey, '1', {ex: 300});
-        
-        // Add logging before triggering queue processing
-        console.log('🔄 Attempting to trigger queue processing:', {
-          pixelQueueLength,
-          userQueueLength,
-          appUrl: process.env.NEXT_PUBLIC_APP_URL,
-          hasCronSecret: !!process.env.CRON_SECRET
-        });
-        
-        // Trigger processing in background
-        if (process.env.NEXT_PUBLIC_APP_URL && process.env.CRON_SECRET) {
-          triggerQueueProcessing();
-        } else {
-          console.warn('⚠️ Missing required env vars for queue processing');
-        }
-      } else {
-        console.log('ℹ️ Queue processing already active');
-      }
-    } else {
-      console.log(`ℹ️ Queue lengths below threshold (pixels: ${pixelQueueLength}, users: ${userQueueLength})`);
-    }
+    
+    // No longer manually triggering queue processing - Vercel cron job will handle this
+    // _deprecated_triggerQueueProcessing();
 
     // Get recent history for top users calculation - using zrange for sorted set
     const pixelHistory = await redis.zrange('canvas:history', 0, -1);
@@ -570,13 +547,13 @@ async function calculateLockCost(duration: number): Promise<number> {
 // Add this function to calculate activity spikes
 async function calculateActivitySpikes() {
   try {
-    // Define our activity windows
+    // Define our activity windows with tripled thresholds
     const windows = [
-      { minutes: 1, threshold: 10, intensity: 1 },
-      { minutes: 3, threshold: 30, intensity: 2 },
-      { minutes: 5, threshold: 60, intensity: 3 },
-      { minutes: 10, threshold: 100, intensity: 4 },
-      { minutes: 15, threshold: 200, intensity: 5 }
+      { minutes: 1, threshold: 30, intensity: 1 },   // Was 10
+      { minutes: 3, threshold: 90, intensity: 2 },   // Was 30
+      { minutes: 5, threshold: 180, intensity: 3 },  // Was 60
+      { minutes: 10, threshold: 300, intensity: 4 }, // Was 100
+      { minutes: 15, threshold: 600, intensity: 5 }  // Was 200
     ];
     
     const now = Date.now();

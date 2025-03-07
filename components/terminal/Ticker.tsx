@@ -153,9 +153,12 @@ export default function Ticker() {
         });
       }
       
+      // Always update activity spikes when provided, even if it's an empty array
+      // This ensures spikes are cleared when they should be
       if (data.activitySpikes !== undefined) {
         setActivitySpikes(data.activitySpikes);
-        if (DEBUG) console.log('📈 Activity spikes updated:', data.activitySpikes);
+        if (DEBUG) console.log('📈 Activity spikes updated:', data.activitySpikes, 
+          'Length:', data.activitySpikes.length);
       }
     };
 
@@ -198,7 +201,7 @@ export default function Ticker() {
         pusherManager.reconnect();
       }
       
-      pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+      pusherManager.subscribe('pixel-placed', handlePixelPlaced, 'ticker-component');
       setIsConnected(true);
     };
 

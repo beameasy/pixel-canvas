@@ -71,6 +71,9 @@ export async function POST(request: Request) {
         ex: 300 // Expire in 5 minutes
       });
 
+      // Vercel cron job will handle queue processing
+      // Remove manual trigger for consistency
+      /*
       if (processingSet) {
         await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
           method: 'POST',
@@ -80,6 +83,7 @@ export async function POST(request: Request) {
           }
         });
       }
+      */
     }
 
     // Send Pusher notifications in smaller batches
