@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { redis } from '@/lib/server/redis'
-import { getAdminClient } from '../../_lib/supabaseAdmin'
+import { getAdminClient, getTableName } from '../../_lib/supabaseAdmin'
 
 export async function GET(request: Request) {
   try {
@@ -28,7 +28,9 @@ export async function GET(request: Request) {
     // Get user data from Supabase
     const supabase = getAdminClient();
     
-    let query = supabase.from('users').select('*');
+    // Use environment-specific table name
+    const usersTable = getTableName('users');
+    let query = supabase.from(usersTable).select('*');
     
     if (search) {
       query = query.or(`wallet_address.ilike.%${search}%,farcaster_username.ilike.%${search}%`);

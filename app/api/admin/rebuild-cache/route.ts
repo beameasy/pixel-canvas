@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
-import { redis } from '@/lib/server/redis';
-import { getAdminClient } from '../../_lib/supabaseAdmin';
+import { redis, getQueueName } from '@/lib/server/redis';
+import { getAdminClient, getTableName } from '../../_lib/supabaseAdmin';
 
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
@@ -18,11 +18,69 @@ export async function POST(request: Request) {
   }
 
   try {
+    console.log('🔄 Starting cache rebuild. Purging existing cache...');
+    
+    // Clear queue data
+    const pixelsQueue = getQueueName('supabase:pixels:queue');
+    const usersQueue = getQueueName('supabase:users:queue');
+    const bansQueue = getQueueName('supabase:bans:queue');
+    
+    await Promise.all([
+      redis.del('canvas:pixels'),
+      redis.del('canvas:pixels:metadata'),
+      redis.del(pixelsQueue),
+      redis.del(usersQueue),
+      redis.del(bansQueue),
+      redis.del('canvas:history')
+    ]);
+    
+    // Get admin client
     const supabase = getAdminClient();
     
+    // Load pixels from Supabase
+    console.log('📥 Loading pixels from Supabase...');
+    const { data: pixels, error: pixelError } = await supabase
+      .from(getTableName('pixels'))
+      .select('*')
+      .order('placed_at', { ascending: false });
+      
+    if (pixelError) {
+      throw new Error(`Failed to load pixels: ${pixelError.message}`);
+    }
+    
+    // Handle case with no pixels
+    if (!pixels || pixels.length === 0) {
+      return NextResponse.json({ 
+        success: true, 
+        message: 'Cache rebuild complete - no pixels found in database' 
+      });
+    }
+    
+    console.log(`📊 Found ${pixels.length} pixels in database`);
+    
+    // Get user data
+    console.log('👤 Loading user data from Supabase...');
+    const { data: users, error: userError } = await supabase
+      .from(getTableName('users'))
+      .select('*');
+      
+    if (userError) {
+      throw new Error(`Failed to load users: ${userError.message}`);
+    }
+    
+    // Load banned wallets
+    console.log('🚫 Loading banned wallets from Supabase...');
+    const { data: bannedWallets, error: bannedError } = await supabase
+      .from(getTableName('banned_wallets'))
+      .select('*');
+      
+    if (bannedError) {
+      throw new Error(`Failed to load banned wallets: ${bannedError.message}`);
+    }
+
     // 1. Get total pixel count
     const { count: totalPixels, error: countError } = await supabase
-      .from('pixels')
+      .from(getTableName('pixels'))
       .select('*', { count: 'exact', head: true });
 
     if (countError) throw countError;
@@ -36,15 +94,15 @@ export async function POST(request: Request) {
     for (let i = 0; i < totalPixels!; i += BATCH_SIZE) {
       console.log(`🔄 Processing pixels batch ${i / BATCH_SIZE + 1}/${Math.ceil(totalPixels! / BATCH_SIZE)}`);
       
-      const { data: pixels, error: pixelsError } = await supabase
-        .from('pixels')
+      const { data: pixelsBatch, error: pixelsBatchError } = await supabase
+        .from(getTableName('pixels'))
         .select('*')
         .order('placed_at', { ascending: true })
         .range(i, i + BATCH_SIZE - 1);
         
-      if (pixelsError) throw pixelsError;
+      if (pixelsBatchError) throw pixelsBatchError;
 
-      pixels?.forEach(pixel => {
+      pixelsBatch?.forEach(pixel => {
         const key = `${pixel.x},${pixel.y}`;
         canvasPixels[key] = JSON.stringify(pixel);
         historyEntries.push({
@@ -55,12 +113,6 @@ export async function POST(request: Request) {
     }
 
     // 3. Rebuild users cache
-    const { data: users, error: usersError } = await supabase
-      .from('users')
-      .select('*');
-
-    if (usersError) throw usersError;
-
     const usersCache: Record<string, any> = {};
     const usersFarcasterCache: Record<string, any> = {};
     users?.forEach(user => {
@@ -74,14 +126,6 @@ export async function POST(request: Request) {
     });
 
     // 4. Rebuild banned wallets cache
-    const { data: bannedWallets, error: bannedError } = await supabase
-      .from('banned_wallets')
-      .select('wallet_address')
-      .eq('active', true);
-
-    if (bannedError) throw bannedError;
-
-    // Clear and rebuild banned wallets cache
     await redis.del('banned:wallets:permanent');
     if (bannedWallets?.length > 0) {
       await redis.sadd('banned:wallets:permanent', 
@@ -92,18 +136,6 @@ export async function POST(request: Request) {
     // 5. Update Redis caches in batches
     console.log('💾 Updating Redis caches...');
     
-    // Clear existing caches
-    await Promise.all([
-      redis.del('canvas:pixels'),
-      redis.del('canvas:history'),
-      redis.del('queue_processing_active'),
-      redis.del('supabase:pixels:queue'),
-      redis.del('supabase:users:queue'),
-      redis.del('canvas:pixels:queue'),
-      redis.del('users:queue'),
-      redis.del('pending:bans')
-    ]);
-
     // Update canvas pixels in batches
     const pixelEntries = Object.entries(canvasPixels);
     for (let i = 0; i < pixelEntries.length; i += BATCH_SIZE) {

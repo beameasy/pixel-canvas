@@ -159,4 +159,11 @@ export async function checkRedisConnection() {
 }
 
 // Initial health check
-checkRedisConnection() 
+checkRedisConnection()
+
+// Add a utility function to get environment-specific Redis queue names
+export const getQueueName = (baseQueueName: string): string => {
+  const isDev = process.env.NODE_ENV === 'development';
+  const prefix = isDev ? 'dev:' : '';
+  return `${prefix}${baseQueueName}`;
+}; 

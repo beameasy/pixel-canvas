@@ -12,6 +12,20 @@ import { TIERS, DEFAULT_TIER } from '@/lib/server/tiers.config';
 import FarcasterLogo from '@/components/ui/FarcasterLogo';
 import { pusherManager } from '@/lib/client/pusherManager';
 
+// Add conditional logging utility
+const isDev = process.env.NODE_ENV === 'development';
+const logger = {
+  log: (...args: any[]) => {
+    if (isDev) console.log(...args);
+  },
+  error: (...args: any[]) => {
+    if (isDev) console.error(...args);
+  },
+  warn: (...args: any[]) => {
+    if (isDev) console.warn(...args);
+  }
+};
+
 declare global {
   interface Window {
     tooltipTimeout: NodeJS.Timeout;
@@ -205,10 +219,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add this function to process updates using requestAnimationFrame
   const processPixelUpdates = useCallback(() => {
-    console.log('🔴 Processing pixel updates. Queue length:', pixelUpdateQueue.current.length);
+    logger.log('🔴 Processing pixel updates. Queue length:', pixelUpdateQueue.current.length);
     
     if (pixelUpdateQueue.current.length === 0) {
-      console.log('🔴 No updates to process. Ending processing cycle.');
+      logger.log('🔴 No updates to process. Ending processing cycle.');
       isProcessingUpdates.current = false;
       return;
     }
@@ -217,13 +231,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     
     // Process up to 10 updates per frame
     const updates = pixelUpdateQueue.current.splice(0, 10);
-    console.log('🔴 Processing batch of updates:', updates.length);
+    logger.log('🔴 Processing batch of updates:', updates.length);
     
     setCanvasState(prev => {
       const newPixels = new Map(prev.pixels);
       updates.forEach(update => {
         const key = `${update.x},${update.y}`;
-        console.log('🔴 Adding pixel to canvas:', key, update.color);
+        logger.log('🔴 Adding pixel to canvas:', key, update.color);
         
         const fullPixel: PixelData = {
           ...update,
@@ -241,26 +255,26 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     // Continue processing if more updates exist
     if (pixelUpdateQueue.current.length > 0) {
-      console.log('🔴 More updates to process. Continuing in next frame.');
+      logger.log('🔴 More updates to process. Continuing in next frame.');
       requestAnimationFrame(processPixelUpdates);
     } else {
-      console.log('🔴 All updates processed. Ending processing cycle.');
+      logger.log('🔴 All updates processed. Ending processing cycle.');
       isProcessingUpdates.current = false;
     }
   }, []);
 
   // Update the queuePixelUpdate function to include required fields
   const queuePixelUpdate = useCallback((pixel: {x: number, y: number, color: string, wallet_address: string}) => {
-    console.log('🔴 Adding pixel to update queue:', pixel);
-    console.log('🔴 Queue length before adding:', pixelUpdateQueue.current.length);
+    logger.log('🔴 Adding pixel to update queue:', pixel);
+    logger.log('🔴 Queue length before adding:', pixelUpdateQueue.current.length);
     
     pixelUpdateQueue.current.push(pixel); // Push the original pixel data
     
-    console.log('🔴 Queue length after adding:', pixelUpdateQueue.current.length);
-    console.log('🔴 Processing status:', isProcessingUpdates.current);
+    logger.log('🔴 Queue length after adding:', pixelUpdateQueue.current.length);
+    logger.log('🔴 Processing status:', isProcessingUpdates.current);
     
     if (!isProcessingUpdates.current) {
-      console.log('🔴 Starting pixel update processing');
+      logger.log('🔴 Starting pixel update processing');
       requestAnimationFrame(processPixelUpdates);
     }
   }, [processPixelUpdates]);
@@ -304,7 +318,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
     // Handle real-time updates through RAF queue
     channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
-      console.log('🔴 Pusher event received:', {
+      logger.log('🔴 Pusher event received:', {
         event: 'pixel-placed',
         pixel: data.pixel,
         pusherConnected,
@@ -312,11 +326,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       });
       
       if (!pusherConnected || !data.pixel.wallet_address) {
-        console.log('🔴 Pusher event ignored - not connected or missing wallet address');
+        logger.log('🔴 Pusher event ignored - not connected or missing wallet address');
         return;
       }
       
-      console.log('🔴 Queueing pixel update:', {
+      logger.log('🔴 Queueing pixel update:', {
         x: data.pixel.x,
         y: data.pixel.y,
         color: data.pixel.color,
@@ -385,10 +399,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           isLoading: false
         }));
       } else {
-        console.log('Canvas state unchanged (304), using cached version');
+        logger.log('Canvas state unchanged (304), using cached version');
       }
     } catch (error) {
-      console.error('Failed to load canvas state:', error);
+      logger.error('Failed to load canvas state:', error);
     }
   }, []);
 
@@ -538,7 +552,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           });
         });
       } catch (error) {
-        console.error('Failed to load initial data:', error);
+        logger.error('Failed to load initial data:', error);
       }
     };
 
@@ -578,7 +592,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           }));
         }
       } catch (error) {
-        console.error("Failed to fetch profile/balance:", error);
+        logger.error("Failed to fetch profile/balance:", error);
       }
     };
     
@@ -618,7 +632,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         ))
       }));
     } catch (error) {
-      console.error('Failed to load pixels:', error);
+      logger.error('Failed to load pixels:', error);
       setFlashMessage('Failed to load canvas state');
     }
   }, []);
@@ -943,9 +957,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     debounce((viewState: ViewState) => {
       try {
         localStorage.setItem('canvasViewState', JSON.stringify(viewState));
-        console.log('💾 Canvas: View state saved (debounced)');
+        logger.log('💾 Canvas: View state saved (debounced)');
       } catch (error) {
-        console.error('Failed to save canvas view state:', error);
+        logger.error('Failed to save canvas view state:', error);
       }
     }, 300),
     []
@@ -1066,7 +1080,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       try {
         localStorage.setItem('canvasViewState', JSON.stringify(canvasState.view));
       } catch (error) {
-        console.error('Failed to save canvas view state:', error);
+        logger.error('Failed to save canvas view state:', error);
       }
     }
   }, [canvasState.view, canvasState.pixels]);
@@ -1074,29 +1088,29 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Update the fetchBalance function to accept a force parameter and respect profileReady
   const fetchBalance = useCallback(async (force = false) => {
     if (!authenticated) {
-      console.log("💰 [Balance] Not authenticated, skipping balance fetch");
+      logger.log("💰 [Balance] Not authenticated, skipping balance fetch");
       return;
     }
     
     if (isBanned) {
-      console.log("🚫 [Balance] Wallet is banned, skipping balance fetch");
+      logger.log("🚫 [Balance] Wallet is banned, skipping balance fetch");
       return;
     }
 
     if (!profileReady) {
-      console.log("💰 [Balance] Profile not ready, skipping balance fetch");
+      logger.log("💰 [Balance] Profile not ready, skipping balance fetch");
       return;
     }
     
     const now = Date.now();
     // Skip if recently fetched and not forced
     if (!force && now - lastBalanceFetchTime.current < BALANCE_FETCH_COOLDOWN) {
-      console.log('🔵 Balance fetch skipped (cooldown active)');
+      logger.log('🔵 Balance fetch skipped (cooldown active)');
       return;
     }
     
     try {
-      console.log(`🔵 Fetching balance for: ${address}${force ? ' (forced)' : ''}`);
+      logger.log(`🔵 Fetching balance for: ${address}${force ? ' (forced)' : ''}`);
       const token = await getAccessToken();
       
       // Add cache-busting parameter when forced
@@ -1127,14 +1141,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           last_active: prev?.last_active ?? undefined,
           updated_at: prev?.updated_at ?? undefined
         }));
-        console.log('🔵 Balance updated:', {
+        logger.log('🔵 Balance updated:', {
           new: Number(data.balance),
           old: userProfile?.token_balance,
           timestamp: now
         });
       }
     } catch (error) {
-      console.error('Failed to fetch balance:', error);
+      logger.error('Failed to fetch balance:', error);
     }
   }, [authenticated, profileReady, address, user?.id, getAccessToken, isBanned]);
 
@@ -1153,7 +1167,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
     
     if (!profileReady) {
-      console.warn("Profile not ready, cannot place pixel yet");
+      logger.warn("Profile not ready, cannot place pixel yet");
       clearPreviewPixel();
       return;
     }
@@ -1335,7 +1349,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       e.changedTouches.length === 1 &&
       touchMode === 'place'
     ) {
-      console.log('Placing pixel on touch end:', interactionState.previewPixel);
+      logger.log('Placing pixel on touch end:', interactionState.previewPixel);
       handlePlacePixel(
         interactionState.previewPixel.x,
         interactionState.previewPixel.y,
@@ -1373,14 +1387,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         });
         
         if (!response.ok) {
-          console.warn('Failed to fetch Farcaster profile:', response.status);
+          logger.warn('Failed to fetch Farcaster profile:', response.status);
           return;
         }
         
         const data = await response.json();
         setUserProfile(data);
       } catch (error) {
-        console.error('Error fetching Farcaster profile:', error);
+        logger.error('Error fetching Farcaster profile:', error);
       }
     }, 500),
     []
@@ -1573,7 +1587,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add useEffect to monitor canvasRef
   useEffect(() => {
-    console.log('Canvas component - canvasRef updated:', {
+    logger.log('Canvas component - canvasRef updated:', {
       ref: canvasRef,
       current: canvasRef.current,
       element: document.querySelector('canvas')
@@ -1583,10 +1597,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Log only when the canvas element is mounted/unmounted
   useEffect(() => {
     if (canvasRef.current) {
-      console.log('Canvas mounted:', canvasRef.current);
+      logger.log('Canvas mounted:', canvasRef.current);
     }
     return () => {
-      console.log('Canvas unmounting');
+      logger.log('Canvas unmounting');
     };
   }, []);
 
@@ -1689,9 +1703,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       }
 
       const data = await response.json();
-      console.log('Successfully queued wallet ban:', wallet);
+      logger.log('Successfully queued wallet ban:', wallet);
     } catch (error) {
-      console.error('Failed to ban wallet:', error);
+      logger.error('Failed to ban wallet:', error);
     }
   };
 
@@ -1707,7 +1721,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       });
       if (!response.ok) throw new Error('Failed to clear selection');
     } catch (error) {
-      console.error('Failed to clear selection:', error);
+      logger.error('Failed to clear selection:', error);
     }
   };
 
@@ -1756,7 +1770,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       setSelectionStart(null);
       setSelectionEnd(null);
     } catch (error) {
-      console.error('Failed to clear selection:', error);
+      logger.error('Failed to clear selection:', error);
     }
   }, [selectionStart, selectionEnd, onClearSelection]);
 
@@ -1802,7 +1816,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // For Pusher updates, only log significant state changes
   const handlePusherUpdate = useCallback((data: any) => {
     if (data.type === 'pixel-update') {
-      console.log('🟣 Significant state change:', {
+      logger.log('🟣 Significant state change:', {
         type: data.type,
         key: data.key,
         balance: data.balance 
@@ -1824,15 +1838,15 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     try {
       // Check if the wallet is banned before proceeding
       if (isBanned) {
-        console.log('🚫 Cannot place pixel: Wallet is banned');
+        logger.log('🚫 Cannot place pixel: Wallet is banned');
         setFlashMessage('Your wallet has been banned from placing pixels');
         clearPreviewPixel(); // Clear preview when banned
         return false;
       }
       
-      console.log('🎨 Starting pixel placement:', { x, y, color });
+      logger.log('🎨 Starting pixel placement:', { x, y, color });
       const previousPixel = canvasState.pixels.get(`${x},${y}`);
-      console.log('🎨 Previous pixel state:', previousPixel);
+      logger.log('🎨 Previous pixel state:', previousPixel);
 
       // Create a temporary pixel for optimistic update
       const tempPixel: PixelData = {
@@ -1879,12 +1893,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         })
       });
 
-      console.log('🎨 API response status:', response.status);
+      logger.log('🎨 API response status:', response.status);
 
       if (!response.ok) {
-        console.log('🎨 Placement failed, reverting to previous state');
+        logger.log('🎨 Placement failed, reverting to previous state');
         const error = await response.json();
-        console.log('🔵 Received error:', error);
+        logger.log('🔵 Received error:', error);
         
         // Revert to previous state if placement failed
         setCanvasState(prev => {
@@ -1906,19 +1920,19 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         // Special handling for version conflicts
         if (response.status === 409 && error.currentVersion) {
           // If we have a version conflict, fetch the latest canvas state
-          console.log('🔄 Version conflict detected, refreshing canvas state');
+          logger.log('🔄 Version conflict detected, refreshing canvas state');
           setFlashMessage('Pixel was modified by someone else. Canvas refreshed.');
           setFlashHasLink(false);
           loadCanvasState(true); // Force refresh the canvas state
         } else if (response.status === 403 && error.banned) {
           // Specific handling for banned wallets
-          console.log('🚫 Received ban response from server');
+          logger.log('🚫 Received ban response from server');
           setFlashMessage(error.error || 'Your wallet has been banned from placing pixels');
           setFlashHasLink(false);
           // No need to update isBanned state here as it's already managed by the hook
         } else if (response.status === 403) {
           // This is likely a pixel protection message with a link
-          console.log('🔒 Cannot overwrite pixel:', error.error);
+          logger.log('🔒 Cannot overwrite pixel:', error.error);
           
           // Add better instructions for acquiring tokens
           let message = error.error || 'Cannot overwrite this pixel';
@@ -1954,14 +1968,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       }
 
       // Update with confirmed data from server
-      console.log('🎨 Placement succeeded, updating with server data');
+      logger.log('🎨 Placement succeeded, updating with server data');
       const data = await response.json();
       
       try {
         // Store timestamp of successful pixel placement
         localStorage.setItem('pixel_placed_at', Date.now().toString());
       } catch (e) {
-        console.error('Failed to set localStorage:', e);
+        logger.error('Failed to set localStorage:', e);
       }
       
       setCanvasState(prev => {
@@ -1981,17 +1995,17 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       // Set the nextPlacementTime in state and localStorage
       setNextPlacementTime(nextTime);
       localStorage.setItem('nextPlacementTime', nextTime.toString());
-      console.log(`🕒 Cooldown set: ${cooldownMs/1000}s until next pixel placement`);
+      logger.log(`🕒 Cooldown set: ${cooldownMs/1000}s until next pixel placement`);
       
       // Force refresh the token balance from Alchemy
       setTimeout(() => {
-        console.log('🔄 Refreshing token balance after pixel placement');
+        logger.log('🔄 Refreshing token balance after pixel placement');
         fetchBalance(true);
       }, 500); // Small delay to ensure backend has time to set the flag
      
       return true;
     } catch (error) {
-      console.error('Failed to place pixel:', error);
+      logger.error('Failed to place pixel:', error);
       setFlashMessage(error instanceof Error ? error.message : 'Failed to place pixel');
       clearPreviewPixel(); // Clear preview on any error
       return false;
@@ -2005,7 +2019,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const initializeCanvas = () => {
       // Add debugging to check canvas element
       const canvasElement = canvasRef.current;
-      console.log('Canvas initialization:', {
+      logger.log('Canvas initialization:', {
         canvasExists: !!canvasElement,
         width: canvasElement?.width,
         height: canvasElement?.height,
@@ -2065,7 +2079,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
             // Ensure scale is within acceptable bounds
             const safeScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, viewState.scale));
             
-            console.log('🔄 Canvas: Restoring saved view state:', viewState);
+            logger.log('🔄 Canvas: Restoring saved view state:', viewState);
             
             // Apply the saved view state
             setCanvasState(prev => ({
@@ -2085,7 +2099,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           resetView();
         }
       } catch (error) {
-        console.error('Failed to restore canvas view state:', error);
+        logger.error('Failed to restore canvas view state:', error);
         // Fall back to reset view on error
         resetView();
       }
@@ -2165,7 +2179,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add this effect to monitor userProfile changes
   useEffect(() => {
-    console.log('🔵 User profile updated:', {
+    logger.log('🔵 User profile updated:', {
       balance: userProfile?.token_balance,
       timestamp: userProfile?.updated_at
     });
@@ -2183,7 +2197,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        console.log('🔴 Tab became visible - reconnecting Pusher');
+        logger.log('🔴 Tab became visible - reconnecting Pusher');
         
         // Only proceed if both refs are available
         if (!containerRef.current || !canvasRef.current) return;
@@ -2210,19 +2224,19 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
         // Use pusherManager to reconnect instead of direct channel access
         if (!pusherManager.isConnected()) {
-          console.log('🔴 Reconnecting via pusherManager');
+          logger.log('🔴 Reconnecting via pusherManager');
           pusherManager.reconnect();
         }
 
         // Set up the event handler again using pusherManager
         pusherManager.subscribe('pixel-placed', (data: PixelPlacedEvent) => {
-          console.log('🔴 Pusher event received after reconnect:', {
+          logger.log('🔴 Pusher event received after reconnect:', {
             event: 'pixel-placed',
             pixel: data.pixel
           });
           
           if (!data.pixel.wallet_address) {
-            console.log('🔴 Pusher event ignored - missing wallet address');
+            logger.log('🔴 Pusher event ignored - missing wallet address');
             return;
           }
           
@@ -2266,11 +2280,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add this function to fetch user profiles
   const fetchUserProfile = async (walletAddress: string): Promise<UserProfile | null> => {
-    // Check if we have a cached profile that's less than 1 minute old
+    // Check if we have a cached profile that's less than 10 seconds old
     const cachedProfile = userProfiles[walletAddress];
     const now = Date.now();
     
-    if (cachedProfile && (now - cachedProfile.lastFetched < 60000)) {
+    if (cachedProfile && (now - cachedProfile.lastFetched < 10000)) {
       return cachedProfile.profile;
     }
     
@@ -2297,7 +2311,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       }));
       return data;
     } catch (error) {
-      console.error('Error fetching user profile:', error);
+      logger.error('Error fetching user profile:', error);
       setUserProfiles(prev => ({
         ...prev,
         [walletAddress]: { profile: null, lastFetched: now }
@@ -2316,12 +2330,88 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add this single useEffect to handle canvas visibility
   useEffect(() => {
+    let lastVisibilityTime = Date.now();
+    
     // Set up visibility change handler
-    const visibilityHandler = () => {
+    const visibilityHandler = async () => {
       if (document.visibilityState === 'visible') {
-        console.log('Tab became visible, refreshing canvas');
-        // Just set the render flag to trigger a redraw
+        logger.log('Tab became visible, refreshing canvas');
+        
+        // Set the render flag to trigger a redraw immediately
         needsRender.current = true;
+        
+        // Only do the expensive operations if we've been away for a while
+        const now = Date.now();
+        const timeAway = now - lastVisibilityTime;
+        
+        // If we've been away for more than 30 seconds, reconnect Pusher and fetch updates
+        if (timeAway > 30000) {
+          logger.log('Tab was away for more than 30 seconds, reconnecting Pusher');
+          
+          // Reconnect Pusher
+          pusherManager.reconnect();
+          
+          // Rebind events directly with pusherManager
+          pusherManager.subscribe('pixel-placed', (data: any) => {
+            const { pixel } = data;
+            if (!pixel) return;
+            
+            // Update local state with the new pixel
+            setCanvasState(prev => ({
+              ...prev,
+              pixels: new Map(prev.pixels).set(`${pixel.x},${pixel.y}`, pixel)
+            }));
+            
+            // Trigger render
+            needsRender.current = true;
+          });
+          
+          // Only fetch new pixels if we've been away for a significant time
+          try {
+            const response = await fetch('/api/pixels/recent?since=' + Math.floor(lastVisibilityTime / 1000));
+            if (response.ok) {
+              const data = await response.json();
+              
+              // Only update changed pixels instead of replacing the entire map
+              setCanvasState(prev => {
+                const newPixels = new Map(prev.pixels);
+                data.pixels.forEach((pixel: any) => {
+                  newPixels.set(`${pixel.x},${pixel.y}`, pixel);
+                });
+                
+                return {
+                  ...prev,
+                  pixels: newPixels,
+                  isLoading: false
+                };
+              });
+            } else {
+              // If the recent API fails, fall back to full refresh
+              const fullResponse = await fetch('/api/pixels');
+              if (fullResponse.ok) {
+                const data = await fullResponse.json();
+                
+                setCanvasState(prev => ({
+                  ...prev,
+                  pixels: new Map(data.map((pixel: any) => 
+                    [`${pixel.x},${pixel.y}`, pixel]
+                  )),
+                  isLoading: false
+                }));
+              }
+            }
+            
+            needsRender.current = true;
+          } catch (error) {
+            logger.error('Failed to reload canvas state:', error);
+          }
+        }
+        
+        // Update the last visibility time
+        lastVisibilityTime = now;
+      } else {
+        // Update the last visibility time when tab becomes hidden
+        lastVisibilityTime = Date.now();
       }
     };
     
@@ -2329,61 +2419,6 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     
     return () => {
       document.removeEventListener('visibilitychange', visibilityHandler);
-    };
-  }, []);
-
-  // Add this useEffect to handle tab visibility changes and Pusher reconnection
-  useEffect(() => {
-    const handleVisibilityChange = async () => {
-      if (document.visibilityState === 'visible') {
-        console.log('Tab became visible, reconnecting Pusher and refreshing canvas state');
-        
-        // Reconnect Pusher
-        pusherManager.reconnect();
-        
-        // Rebind events directly with pusherManager
-        pusherManager.subscribe('pixel-placed', (data: any) => {
-          const { pixel } = data;
-          if (!pixel) return;
-          
-          // Update local state with the new pixel
-          setCanvasState(prev => ({
-            ...prev,
-            pixels: new Map(prev.pixels).set(`${pixel.x},${pixel.y}`, pixel)
-          }));
-          
-          // Trigger render
-          needsRender.current = true;
-        });
-        
-        // Refresh canvas state by fetching latest pixels
-        try {
-          const response = await fetch('/api/pixels');
-          const data = await response.json();
-          
-          // Update pixels with latest data
-          const pixelMap = new Map();
-          data.forEach((pixel: any) => {
-            pixelMap.set(`${pixel.x},${pixel.y}`, pixel);
-          });
-          
-          // Update state with new pixel data
-          setCanvasState(prev => ({
-            ...prev,
-            pixels: pixelMap,
-            isLoading: false
-          }));
-          
-          needsRender.current = true;
-        } catch (error) {
-          console.error('Failed to reload canvas state:', error);
-        }
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
@@ -2403,7 +2438,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           // Ensure scale is within acceptable bounds
           const safeScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, viewState.scale));
           
-          console.log('🔄 Restoring saved canvas view state:', viewState);
+          logger.log('🔄 Restoring saved canvas view state:', viewState);
           
           setCanvasState(prev => ({
             ...prev,
@@ -2419,7 +2454,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         }
       }
     } catch (error) {
-      console.error('Failed to restore canvas view state:', error);
+      logger.error('Failed to restore canvas view state:', error);
     }
   }, []);
 
@@ -2429,13 +2464,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     if (!canvasState.isLoading && canvasRef.current && needsRender.current) {
       try {
         localStorage.setItem('canvasViewState', JSON.stringify(canvasState.view));
-        console.log('💾 Canvas: View state saved to localStorage', {
+        logger.log('💾 Canvas: View state saved to localStorage', {
           x: Math.round(canvasState.view.x),
           y: Math.round(canvasState.view.y),
           scale: canvasState.view.scale.toFixed(2)
         });
       } catch (error) {
-        console.error('Failed to save canvas view state:', error);
+        logger.error('Failed to save canvas view state:', error);
       }
     }
   }, [canvasState.view, canvasState.isLoading]);
@@ -2449,9 +2484,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       // Also do a direct save to ensure latest state is captured
       try {
         localStorage.setItem('canvasViewState', JSON.stringify(canvasState.view));
-        console.log('💾 Canvas: Final view state saved before unmount');
+        logger.log('💾 Canvas: Final view state saved before unmount');
       } catch (error) {
-        console.error('Failed to save final canvas view state:', error);
+        logger.error('Failed to save final canvas view state:', error);
       }
     };
   }, [debouncedSaveViewState, canvasState.view]);
@@ -2582,6 +2617,102 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add a ref to store the function to call when flash message is clicked
   const flashLinkAction = useRef<(() => void) | null>(null);
+
+  // Create a dedicated function for handling real-time pixel updates
+  const handleRealTimePixelUpdate = useCallback((data: any) => {
+    if (!data || !data.pixel) return;
+    
+    const pixel = data.pixel;
+    logger.log('🟢 Received real-time pixel update:', pixel);
+    
+    // Queue the update for processing
+    queuePixelUpdate({
+      x: pixel.x,
+      y: pixel.y,
+      color: pixel.color,
+      wallet_address: pixel.wallet_address
+    });
+    
+    // Force a render
+    needsRender.current = true;
+  }, [queuePixelUpdate]);
+
+  // Set up Pusher subscription for real-time updates
+  useEffect(() => {
+    logger.log('Setting up Pusher subscription for real-time updates');
+    
+    // Subscribe to pixel-placed events
+    pusherManager.subscribe('pixel-placed', handleRealTimePixelUpdate);
+    
+    // Cleanup on unmount
+    return () => {
+      pusherManager.unsubscribe('pixel-placed', handleRealTimePixelUpdate);
+    };
+  }, [handleRealTimePixelUpdate]);
+
+  // Add visibility change handler to fetch recent pixels when returning to tab
+  useEffect(() => {
+    let lastVisibilityTime = Date.now();
+    
+    // Set up visibility change handler
+    const visibilityHandler = async () => {
+      if (document.visibilityState === 'visible') {
+        logger.log('Tab became visible, refreshing canvas');
+        
+        // Set the render flag to trigger a redraw immediately
+        needsRender.current = true;
+        
+        // Reconnect Pusher on visibility change
+        pusherManager.reconnect();
+        
+        // Only fetch new data if we've been away for a while
+        const now = Date.now();
+        const timeAway = now - lastVisibilityTime;
+        
+        // If we've been away for more than 10 seconds, fetch updates
+        if (timeAway > 10000) {
+          logger.log('Tab was away for more than 10 seconds, fetching recent pixels');
+          
+          try {
+            const response = await fetch('/api/pixels/recent?since=' + Math.floor(lastVisibilityTime / 1000));
+            if (response.ok) {
+              const data = await response.json();
+              
+              // Update changed pixels
+              setCanvasState(prev => {
+                const newPixels = new Map(prev.pixels);
+                data.pixels.forEach((pixel: any) => {
+                  newPixels.set(`${pixel.x},${pixel.y}`, pixel);
+                });
+                
+                return {
+                  ...prev,
+                  pixels: newPixels,
+                  isLoading: false
+                };
+              });
+            }
+            
+            needsRender.current = true;
+          } catch (error) {
+            logger.error('Failed to reload canvas state:', error);
+          }
+        }
+        
+        // Update the last visibility time
+        lastVisibilityTime = now;
+      } else {
+        // Update the last visibility time when tab becomes hidden
+        lastVisibilityTime = Date.now();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', visibilityHandler);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', visibilityHandler);
+    };
+  }, []);
 
   return (
     <div 

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { redis } from '@/lib/server/redis';
+import { redis, getQueueName } from '@/lib/server/redis';
 import { v4 as uuidv4 } from 'uuid';
 import { isAdmin } from '@/components/admin/utils';
 import { pusher } from '@/lib/server/pusher';
@@ -12,6 +12,13 @@ interface PixelData {
   wallet_address: string;
   placed_at: string;
   is_void?: boolean;
+}
+
+// Helper function to get environment-specific processing flag key
+function getProcessingFlagKey() {
+  const isDev = process.env.NODE_ENV === 'development';
+  const prefix = isDev ? 'dev:' : '';
+  return `${prefix}queue_processing_active`;
 }
 
 export async function POST(request: Request) {
@@ -53,14 +60,15 @@ export async function POST(request: Request) {
           [pixelKey]: JSON.stringify(clearPixel)
         });
         
-        await redis.rpush('supabase:pixels:queue', JSON.stringify(clearPixel));
+        const pixelsQueue = getQueueName('supabase:pixels:queue');
+        await redis.rpush(pixelsQueue, JSON.stringify(clearPixel));
         clearedPixels.push(clearPixel);
       }
 
-      // Trigger queue processing after each batch
-      const processingSet = await redis.set('queue_processing_active', 'true', { 
-        nx: true,
-        ex: 300
+      // Set processing flag
+      const processingFlagKey = getProcessingFlagKey();
+      const processingSet = await redis.set(processingFlagKey, 'true', {
+        ex: 300 // Expire in 5 minutes
       });
 
       if (processingSet) {

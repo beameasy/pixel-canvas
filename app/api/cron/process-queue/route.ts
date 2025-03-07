@@ -1,11 +1,18 @@
 import { NextResponse } from 'next/server';
-import { redis } from '@/lib/server/redis';
-import { getAdminClient } from '../../_lib/supabaseAdmin';
+import { redis, getQueueName } from '@/lib/server/redis';
+import { getAdminClient, getTableName } from '../../_lib/supabaseAdmin';
 import { v4 as uuidv4 } from 'uuid';
 import { SupabaseClient } from '@supabase/supabase-js';
 
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
+
+// Function to get environment-specific processing flag key
+const getProcessingFlagKey = () => {
+  const isDev = process.env.NODE_ENV === 'development';
+  const prefix = isDev ? 'dev:' : '';
+  return `${prefix}queue_processing_active`;
+};
 
 // New handler for full backups
 async function handleFullBackup(supabase: SupabaseClient) {
@@ -19,30 +26,18 @@ async function handleFullBackup(supabase: SupabaseClient) {
     const allKeys = await redis.keys('canvas:pixel:*');
     console.log(`📊 Found ${allKeys.length} pixels to back up`);
     
-    // Process in reasonable batches
-    const BATCH_SIZE = 1000;
-    for (let i = 0; i < allKeys.length; i += BATCH_SIZE) {
-      const batch = allKeys.slice(i, i + BATCH_SIZE);
-      const pipeline = redis.pipeline();
+    for (const key of allKeys) {
+      const value = await redis.get(key);
+      if (!value) continue;
       
-      for (const key of batch) {
-        pipeline.get(key);
-      }
-      
-      const results = await pipeline.exec();
-      
-      // Queue the pixels for processing
-      for (let j = 0; j < results.length; j++) {
-        try {
-          const result = results[j];
-          if (typeof result === 'string') {
-            const pixel = JSON.parse(result);
-            await redis.rpush('supabase:pixels:queue', JSON.stringify(pixel));
-            stats.pixels++;
-          }
-        } catch (e) {
-          console.error('❌ Failed to parse pixel:', results[j], e);
-        }
+      try {
+        // Ensure value is a string before parsing
+        const pixel = JSON.parse(typeof value === 'string' ? value : String(value));
+        const pixelsQueue = getQueueName('supabase:pixels:queue');
+        await redis.rpush(pixelsQueue, JSON.stringify(pixel));
+        stats.pixels++;
+      } catch (e) {
+        console.error(`Failed to process pixel ${key}:`, e);
       }
     }
     
@@ -52,7 +47,7 @@ async function handleFullBackup(supabase: SupabaseClient) {
     
     for (const wallet of bannedWallets) {
       // Check if this wallet is already in the queue
-      const isQueued = await redis.lrange('supabase:bans:queue', 0, -1).then(
+      const isQueued = await redis.lrange(getQueueName('supabase:bans:queue'), 0, -1).then(
         queue => queue.some(item => {
           try {
             const parsed = JSON.parse(item);
@@ -84,7 +79,7 @@ async function handleFullBackup(supabase: SupabaseClient) {
           active: true
         };
         
-        await redis.rpush('supabase:bans:queue', JSON.stringify(banData));
+        await redis.rpush(getQueueName('supabase:bans:queue'), JSON.stringify(banData));
         stats.banned_wallets++;
       }
     }
@@ -95,7 +90,7 @@ async function handleFullBackup(supabase: SupabaseClient) {
     
     // Track this backup in Supabase
     await supabase
-      .from('backup_logs')
+      .from(getTableName('backup_logs'))
       .insert([{
         backup_time: new Date().toISOString(),
         duration_ms: Date.now() - startTime,
@@ -114,49 +109,65 @@ async function handleFullBackup(supabase: SupabaseClient) {
     
     return stats;
   } catch (error) {
-    console.error('❌ Backup preparation failed:', error);
-    throw error;
+    console.error('❌ Full backup failed:', error);
+    return { success: false, error: String(error) };
   }
+  
+  return { success: true, stats };
 }
 
 export async function GET(request: Request) {
-  // Add security check
-  const secret = request.headers.get('x-cron-secret');
-  if (secret !== process.env.CRON_SECRET) {
-    console.error('❌ Queue processing unauthorized:', {
-      providedSecret: secret?.slice(0, 4),
-      hasEnvSecret: !!process.env.CRON_SECRET,
-      headers: Object.fromEntries(request.headers)
-    });
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  // Check if this is a backup request
-  const isBackup = request.url.includes('backup=true');
-  
-  console.log(`🔄 Queue processor triggered via: ${request.method}${isBackup ? ' (FULL BACKUP)' : ''}`);
-  
   try {
+    // Check for valid cron secret
+    const cronSecret = request.headers.get('x-cron-secret');
+    if (cronSecret !== process.env.CRON_SECRET) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    
+    // Get queue stats for monitoring
+    const pixelsQueue = getQueueName('supabase:pixels:queue');
+    const usersQueue = getQueueName('supabase:users:queue');
+    
+    const queueStats = {
+      pixelsQueueLength: await redis.llen(pixelsQueue),
+      usersQueueLength: await redis.llen(usersQueue),
+      processingActive: await redis.get(getProcessingFlagKey())
+    };
+    
+    // Check if this is a backup request
+    const { searchParams } = new URL(request.url);
+    const isBackup = searchParams.get('backup') === 'true';
+    
+    console.log(`🔄 Queue processor triggered via: ${request.method}${isBackup ? ' (FULL BACKUP)' : ''}`);
+    
+    if (queueStats.pixelsQueueLength === 0 && queueStats.usersQueueLength === 0) {
+      return NextResponse.json({ message: 'No items in queue', stats: queueStats });
+    }
+    
+    // Initialize Supabase client
     const supabase = getAdminClient();
     
-    // Log initial queue state
-    const initialState = {
-      pixelsQueueLength: await redis.llen('supabase:pixels:queue'),
-      usersQueueLength: await redis.llen('supabase:users:queue'),
-      processingActive: await redis.get('queue_processing_active')
-    };
-    console.log('📊 Initial queue state:', initialState);
-
-    // STEP 1: Process users queue FIRST
-    console.log('🔄 Processing users queue FIRST...');
-    const users = await redis.lrange('supabase:users:queue', 0, -1) || [];
-    console.log('📋 Found users in queue:', users.length);
+    console.log('Processing user queue...');
     
-    if (users.length > 0) {
+    // Get users from the queue
+    const usersList = await redis.lrange(usersQueue, 0, 49);
+    
+    if (usersList.length > 0) {
       // Deduplicate users by wallet address
       const uniqueUsers = Object.values(
-        users.reduce<Record<string, any>>((acc, user) => {
+        usersList.reduce<Record<string, any>>((acc, user) => {
           const parsed = typeof user === 'string' ? JSON.parse(user) : user;
+          
+          // Remove fields that don't exist in the database schema
+          if (parsed.farcaster_display_name) {
+            delete parsed.farcaster_display_name;
+          }
+          
+          // Also remove farcaster_updated_at field
+          if (parsed.farcaster_updated_at) {
+            delete parsed.farcaster_updated_at;
+          }
+          
           acc[parsed.wallet_address] = parsed;
           return acc;
         }, {})
@@ -165,24 +176,25 @@ export async function GET(request: Request) {
       console.log('📋 Processing unique users:', uniqueUsers.length);
       
       const { error: userError } = await supabase
-        .from('users')
+        .from(getTableName('users'))
         .upsert(uniqueUsers, { 
-          onConflict: 'wallet_address'
+          onConflict: 'wallet_address',
+          ignoreDuplicates: false 
         });
-
+        
       if (userError) {
         console.error('❌ Error upserting users:', userError);
       } else {
-        await redis.del('supabase:users:queue');
+        await redis.del(usersQueue);
         console.log('✅ Processed users:', uniqueUsers.length);
       }
     }
 
     // STEP 2: Extract unique wallets from pixel queue and ensure they exist
     console.log('🔄 Ensuring all pixel wallets exist in users table...');
-    const pixels = await redis.lrange('supabase:pixels:queue', 0, -1) || [];
-    if (pixels.length > 0) {
-      const parsedPixels = pixels.map(p => typeof p === 'string' ? JSON.parse(p) : p);
+    const pixelsList = await redis.lrange(pixelsQueue, 0, -1) || [];
+    if (pixelsList.length > 0) {
+      const parsedPixels = pixelsList.map(p => typeof p === 'string' ? JSON.parse(p) : p);
       
       // Get unique wallet addresses from pixels
       const uniqueWallets = [...new Set(parsedPixels.map(pixel => 
@@ -199,7 +211,7 @@ export async function GET(request: Request) {
       
       if (walletsToAdd.length > 0) {
         const { error: missingUserError } = await supabase
-          .from('users')
+          .from(getTableName('users'))
           .upsert(walletsToAdd, { 
             onConflict: 'wallet_address',
             ignoreDuplicates: true // Only add if not exists
@@ -215,10 +227,10 @@ export async function GET(request: Request) {
 
     // STEP 3: Process pixels queue
     console.log('🔄 Processing pixels queue...');
-    console.log(`📋 Found ${pixels.length} pixels to process`);
+    console.log(`📋 Found ${pixelsList.length} pixels to process`);
 
-    if (pixels.length > 0) {
-      const parsedPixels = pixels.map(p => typeof p === 'string' ? JSON.parse(p) : p);
+    if (pixelsList.length > 0) {
+      const parsedPixels = pixelsList.map(p => typeof p === 'string' ? JSON.parse(p) : p);
       let successCount = 0;
       
       // Process in reasonable batches
@@ -239,7 +251,7 @@ export async function GET(request: Request) {
         });
         
         const { error: pixelError } = await supabase
-          .from('pixels')
+          .from(getTableName('pixels'))
           .insert(processedBatch);
         
         if (pixelError) {
@@ -250,7 +262,7 @@ export async function GET(request: Request) {
           // Remove processed pixels from the queue
           // Get the original JSON strings for these pixels
           const processedJsonStrings = batch.map(p => 
-            pixels.find(jsonStr => {
+            pixelsList.find(jsonStr => {
               const parsed = typeof jsonStr === 'string' ? JSON.parse(jsonStr) : jsonStr;
               return parsed.x === p.x && parsed.y === p.y && 
                      parsed.wallet_address === p.wallet_address && 
@@ -261,7 +273,7 @@ export async function GET(request: Request) {
           // Remove each processed pixel from the queue
           for (const jsonStr of processedJsonStrings) {
             if (jsonStr) {
-              await redis.lrem('supabase:pixels:queue', 0, jsonStr);
+              await redis.lrem(pixelsQueue, 0, jsonStr);
             }
           }
         }
@@ -292,7 +304,7 @@ export async function GET(request: Request) {
 
     // Process pending bans
     console.log('🔄 Processing ban queue...');
-    const pendingBans = await redis.lrange('supabase:bans:queue', 0, -1);
+    const pendingBans = await redis.lrange(getQueueName('supabase:bans:queue'), 0, -1);
     console.log('📋 Found pending bans:', pendingBans.length);
 
     for (const banJson of pendingBans) {
@@ -314,7 +326,7 @@ export async function GET(request: Request) {
         console.log('🚫 Inserting ban record:', banRecord);
         
         const { data, error } = await supabase
-          .from('banned_wallets')
+          .from(getTableName('banned_wallets'))
           .upsert([banRecord], {
             onConflict: 'wallet_address',
             ignoreDuplicates: false  // Update existing records
@@ -329,7 +341,7 @@ export async function GET(request: Request) {
         console.log('✅ Supabase insert successful:', data);
 
         // Remove from queue using the exact same JSON string
-        const removeCount = await redis.lrem('supabase:bans:queue', 0, banJson);
+        const removeCount = await redis.lrem(getQueueName('supabase:bans:queue'), 0, banJson);
         console.log('🗑️ Removed from queue:', removeCount);
 
         console.log(`✅ Processed ban for wallet: ${ban.wallet_address}`);
@@ -343,7 +355,7 @@ export async function GET(request: Request) {
       const backupId = await redis.get('current_backup_id');
       if (backupId) {
         await supabase
-          .from('backup_logs')
+          .from(getTableName('backup_logs'))
           .update({
             status: 'completed',
             duration_ms: Date.now() - Number(await redis.get('last_backup_time') || 0)
@@ -355,7 +367,7 @@ export async function GET(request: Request) {
     }
 
     // Verify final state
-    const remainingBans = await redis.lrange('supabase:bans:queue', 0, -1);
+    const remainingBans = await redis.lrange(getQueueName('supabase:bans:queue'), 0, -1);
     const bannedWallets = await redis.smembers('banned:wallets:permanent');
     console.log('🔄 Final queue state:', { 
       remainingBans: remainingBans.length,
@@ -363,13 +375,13 @@ export async function GET(request: Request) {
     });
 
     // Clear processing flag at the end
-    await redis.del('queue_processing_active');
+    await redis.del(getProcessingFlagKey());
     console.log('🔄 Cleared processing flag');
 
     return NextResponse.json({ 
       processed: { 
-        pixels: pixels.length, 
-        users: users.length, 
+        pixels: pixelsList.length, 
+        users: usersList.length, 
         bans: pendingBans.length 
       },
       backup: isBackup ? backupStats : null
@@ -377,7 +389,7 @@ export async function GET(request: Request) {
   } catch (error) {
     console.error('Error processing queues:', error);
     // Clear flag even on error
-    await redis.del('queue_processing_active');
+    await redis.del(getProcessingFlagKey());
     console.log('🔄 Cleared processing flag after error');
     return NextResponse.json({ error: 'Failed to process queues' }, { status: 500 });
   }

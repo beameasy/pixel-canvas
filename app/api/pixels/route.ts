@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { redis } from '@/lib/server/redis';
+import { redis, getQueueName } from '@/lib/server/redis';
 import { getAccessToken } from '@privy-io/react-auth';
 import { getAdminClient } from '../_lib/supabaseAdmin';
 import { authenticateUser } from '../_lib/authenticateUser';
@@ -156,13 +156,19 @@ async function getTokenBalance(walletAddress: string, session: any): Promise<num
       const parsedUserData = typeof userData === 'string' ? JSON.parse(userData) : userData;
       // Keep existing Privy ID if present
       if (session?.privy_id && !parsedUserData.privy_id) {
+        const updatedUserData = {
+          ...parsedUserData,
+          privy_id: session.privy_id,
+          updated_at: new Date().toISOString()
+        };
+        
         await redis.hset('users', {
-          [walletAddress]: JSON.stringify({
-            ...parsedUserData,
-            privy_id: session.privy_id,
-            updated_at: new Date().toISOString()
-          })
+          [walletAddress]: JSON.stringify(updatedUserData)
         });
+        
+        // Queue updated user data for Supabase
+        const usersQueue = getQueueName('supabase:users:queue');
+        await redis.rpush(usersQueue, JSON.stringify(updatedUserData));
       }
       return parsedUserData.token_balance || 0;
     }
@@ -183,6 +189,10 @@ async function getTokenBalance(walletAddress: string, session: any): Promise<num
     await redis.hset('users', {
       [walletAddress]: JSON.stringify(userDataToStore)
     });
+    
+    // Queue new user data for Supabase
+    const usersQueue = getQueueName('supabase:users:queue');
+    await redis.rpush(usersQueue, JSON.stringify(userDataToStore));
 
     return balance;
   } catch (error) {
@@ -209,15 +219,25 @@ async function lockPixel(x: number, y: number, wallet: string, duration: number)
 // Initialize empty lists if they don't exist
 async function initializeRedisKeys() {
   try {
-    const pixelsExists = await redis.exists('supabase:pixels:queue')
-    const usersExists = await redis.exists('supabase:users:queue')
+    const pixelsQueue = getQueueName('supabase:pixels:queue');
+    const usersQueue = getQueueName('supabase:users:queue');
+    
+    const pixelsExists = await redis.exists(pixelsQueue)
+    const usersExists = await redis.exists(usersQueue)
     
     // Just create empty lists - don't push empty arrays
-    if (!pixelsExists) await redis.del('supabase:pixels:queue')
-    if (!usersExists) await redis.del('supabase:users:queue')
+    if (!pixelsExists) await redis.del(pixelsQueue)
+    if (!usersExists) await redis.del(usersQueue)
   } catch (error) {
     console.error('Failed to initialize Redis keys:', error)
   }
+}
+
+// Helper function to get environment-specific processing flag key
+function getProcessingFlagKey() {
+  const isDev = process.env.NODE_ENV === 'development';
+  const prefix = isDev ? 'dev:' : '';
+  return `${prefix}queue_processing_active`;
 }
 
 // Helper function with retries
@@ -264,14 +284,19 @@ export async function POST(request: Request) {
     let balance = user?.token_balance;
     if (balance === null) {
       balance = Number(await getBillboardBalance(walletAddress));
+      const updatedUserData = {
+        ...user,
+        token_balance: balance,
+        updated_at: new Date().toISOString()
+      };
+      
       await redis.hset('users', {
-        [walletAddress]: JSON.stringify({
-          ...user,
-          token_balance: balance,
-          updated_at: new Date().toISOString()
-        })
+        [walletAddress]: JSON.stringify(updatedUserData)
       });
-      console.log('💰 Refreshed balance:', balance);
+      
+      // Queue updated user data for Supabase
+      const usersQueue = getQueueName('supabase:users:queue');
+      await redis.rpush(usersQueue, JSON.stringify(updatedUserData));
     }
 
     // Balance-based cooldown check (skip for admins)
@@ -368,10 +393,11 @@ export async function POST(request: Request) {
       version: newVersion  // Add version number for concurrency control
     };
 
-    // Use Redis transaction to ensure atomic operations
-    const multi = redis.multi();
+    // Use environment-specific queue names
+    const pixelsQueue = getQueueName('supabase:pixels:queue');
     
-    // Prepare all operations
+    // Queue the pixel data for Supabase storage
+    const multi = redis.multi();
     multi.hset('canvas:pixels', {
       [`${x},${y}`]: JSON.stringify(pixelData)
     });
@@ -385,56 +411,49 @@ export async function POST(request: Request) {
       [walletAddress]: now.toString()
     });
     
-    multi.rpush('supabase:pixels:queue', JSON.stringify(pixelData));
+    multi.rpush(pixelsQueue, JSON.stringify(pixelData));
     
     multi.set(`user:${walletAddress}:balance_changed`, "true", {ex: 60});
     
-    // Execute all operations atomically
     await multi.exec();
 
-    // Add logging for queue state
-    console.log('🔄 Queue state after pixel placement:', {
-      queueLength: await redis.llen('supabase:pixels:queue'),
-      processingActive: await redis.get('queue_processing_active'),
-      appUrl: process.env.NEXT_PUBLIC_APP_URL,
+    console.log('📊 Queue stats:', {
+      pixelQueueLength: await redis.llen(pixelsQueue),
+      userQueueLength: await redis.llen(getQueueName('supabase:users:queue')),
       hasCronSecret: !!process.env.CRON_SECRET
     });
 
-    // Trigger queue processing if queue has enough items
-    const queueLength = await redis.llen('supabase:pixels:queue');
-    if (queueLength >= 10) { // Process in batches of 50 or more
-      // Check if processing is already active
-      const processingActive = await redis.get('queue_processing_active');
+    // Trigger queue processing if either queue has enough items
+    const pixelQueueLength = await redis.llen(pixelsQueue);
+    const userQueueLength = await redis.llen(getQueueName('supabase:users:queue'));
+
+    console.log('📊 Queue stats:', {
+      pixelQueueLength,
+      userQueueLength,
+      hasCronSecret: !!process.env.CRON_SECRET
+    });
+
+    // Process if either queue has enough items
+    if (pixelQueueLength >= 10 || userQueueLength >= 10) {
+      // Check if processing is already active with environment-specific key
+      const processingFlagKey = getProcessingFlagKey();
+      const processingActive = await redis.get(processingFlagKey);
+      
       if (!processingActive) {
         // Set processing flag with 5 minute expiry
-        await redis.set('queue_processing_active', '1', {ex: 300});
+        await redis.set(processingFlagKey, '1', {ex: 300});
         
         // Add logging before triggering queue processing
         console.log('🔄 Attempting to trigger queue processing:', {
-          queueLength,
+          pixelQueueLength,
+          userQueueLength,
           appUrl: process.env.NEXT_PUBLIC_APP_URL,
           hasCronSecret: !!process.env.CRON_SECRET
         });
         
         // Trigger processing in background
         if (process.env.NEXT_PUBLIC_APP_URL && process.env.CRON_SECRET) {
-          try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
-              method: 'POST',
-              headers: { 
-                'x-cron-secret': process.env.CRON_SECRET,
-                'origin': process.env.NEXT_PUBLIC_APP_URL 
-              }
-            });
-            
-            if (!response.ok) {
-              console.error('❌ Queue processing trigger failed:', await response.text());
-            } else {
-              console.log('✅ Queue processing triggered successfully');
-            }
-          } catch (error) {
-            console.error('❌ Failed to trigger queue processing:', error);
-          }
+          triggerQueueProcessing();
         } else {
           console.warn('⚠️ Missing required env vars for queue processing');
         }
@@ -442,7 +461,7 @@ export async function POST(request: Request) {
         console.log('ℹ️ Queue processing already active');
       }
     } else {
-      console.log(`ℹ️ Queue length (${queueLength}) below threshold (10)`);
+      console.log(`ℹ️ Queue lengths below threshold (pixels: ${pixelQueueLength}, users: ${userQueueLength})`);
     }
 
     // Get recent history for top users calculation - using zrange for sorted set
@@ -467,12 +486,20 @@ export async function POST(request: Request) {
 
     async function triggerPusherEventWithRetry() {
       try {
+        // Main pixel-placed event
         await pusher.trigger('canvas', 'pixel-placed', { 
           pixel: pixelData,
           topUsers: topUsers,
           activitySpikes: activitySpikes
         });
-        console.log('✅ Pusher event sent successfully');
+
+        // Also trigger a dedicated leaderboard-update event to ensure leaderboard catches it
+        await pusher.trigger('canvas', 'leaderboard-update', { 
+          triggerTime: Date.now(),
+          pixelId: pixelData.id
+        });
+
+        console.log('✅ Pusher events sent successfully');
       } catch (error) {
         console.error(`❌ Failed to send Pusher event (attempt ${retries + 1}/${maxRetries}):`, error);
         if (retries < maxRetries) {

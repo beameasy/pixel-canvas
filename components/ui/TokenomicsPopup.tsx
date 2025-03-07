@@ -102,7 +102,8 @@ export default function TokenomicsPopup({ isOpen, onClose, configVersion }: Toke
             <p>
               When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you currently hold</span> can overwrite your pixel.
             </p>
-            <p className="mt-0.5">
+            
+            <p className="mt-2">
               <span className="text-amber-300">Dynamic Protection:</span> If you buy more tokens, your pixels immediately gain stronger protection, if you sell, they become more vulnerable.
             </p>
           </div>

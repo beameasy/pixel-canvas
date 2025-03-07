@@ -14,6 +14,20 @@ import Head from 'next/head';
 import { useBanStatus } from '@/lib/hooks/useBanStatus';
 import { CONFIG_VERSION } from '@/lib/server/tiers.config';
 
+// Add conditional logging utility
+const isDev = process.env.NODE_ENV === 'development';
+const logger = {
+  log: (...args: any[]) => {
+    if (isDev) console.log(...args);
+  },
+  error: (...args: any[]) => {
+    if (isDev) console.error(...args);
+  },
+  warn: (...args: any[]) => {
+    if (isDev) console.warn(...args);
+  }
+};
+
 export default function Home() {
   const { authenticated, user, getAccessToken } = usePrivy();
   const { isBanned, banReason } = useBanStatus();
@@ -56,10 +70,10 @@ export default function Home() {
           const viewState = canvasRef.current.getViewState();
           if (viewState) {
             localStorage.setItem('canvasViewState', JSON.stringify(viewState));
-            console.log('💾 Saved canvas view state before navigation');
+            logger.log('💾 Saved canvas view state before navigation');
           }
         } catch (error) {
-          console.error('Failed to save canvas view state:', error);
+          logger.error('Failed to save canvas view state:', error);
         }
       }
     };
@@ -75,7 +89,7 @@ export default function Home() {
       if (canvasRef.current) {
         // The canvas component will automatically restore view state from localStorage
         // so we don't need to manually set it here
-        console.log('🔄 Canvas component mounted, view state will be auto-restored if available');
+        logger.log('🔄 Canvas component mounted, view state will be auto-restored if available');
       }
     }, 300);
     
@@ -100,12 +114,12 @@ export default function Home() {
 
   useEffect(() => {
     const storeUserData = async () => {
-      console.log("📝 Checking/creating user profile...");
+      logger.log("📝 Checking/creating user profile...");
       
       try {
         // Skip profile creation for banned wallets
         if (isBanned) {
-          console.log("🚫 Wallet is banned, skipping profile creation");
+          logger.log("🚫 Wallet is banned, skipping profile creation");
           return;
         }
 
@@ -113,7 +127,7 @@ export default function Home() {
         if (!token) return;
 
         if (!user || !user.wallet) {
-          console.log("User or wallet not available yet");
+          logger.log("User or wallet not available yet");
           return;
         }
 
@@ -134,7 +148,7 @@ export default function Home() {
           const errorData = await response.json();
           
           if (errorData.needs_signature) {
-            console.log("New wallet registration, signature required");
+            logger.log("New wallet registration, signature required");
             
             // Generate a message to sign
             const message = `Verify wallet ownership for Billboard: ${walletAddress}`;
@@ -144,7 +158,7 @@ export default function Home() {
               // Use the Privy client to sign the message
               // We need to cast user.wallet to any because the type definition is incomplete
               signature = await (user.wallet as any).signMessage(message);
-              console.log("✅ Signature obtained for wallet verification");
+              logger.log("✅ Signature obtained for wallet verification");
               
               // Retry with signature
               response = await fetch("/api/users/check-profile", {
@@ -160,7 +174,7 @@ export default function Home() {
                 })
               });
             } catch (error) {
-              console.error("Failed to sign message:", error);
+              logger.error("Failed to sign message:", error);
               alert("You must sign the message to verify wallet ownership");
               return;
             }
@@ -168,20 +182,20 @@ export default function Home() {
         }
 
         if (!response.ok) {
-          console.error('Failed to store user data:', await response.text());
+          logger.error('Failed to store user data:', await response.text());
           return;
         }
 
-        console.log("✅ Profile check/creation complete, Canvas can now fetch balance");
+        logger.log("✅ Profile check/creation complete, Canvas can now fetch balance");
         
         setProfileReady(true);
         
         setTimeout(() => {
-          console.log("🔄 Pusher reconnection initiated after profile setup");
+          logger.log("🔄 Pusher reconnection initiated after profile setup");
           pusherManager.reconnect();
         }, 500);
       } catch (error) {
-        console.error("Error checking/creating profile:", error);
+        logger.error("Error checking/creating profile:", error);
       }
     };
 
