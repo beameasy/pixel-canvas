@@ -7,8 +7,9 @@ import { getFarcasterUser } from '../../../components/farcaster/api/getFarcaster
 import { getBillboardBalance, getTokensNeededForUsdAmount } from '@/app/api/_lib/subgraphClient';
 import { pusher } from '@/lib/server/pusher';
 import { v4 as uuidv4 } from 'uuid';
-import { canPlacePixel, canOverwritePixel, getUserTier } from '@/lib/server/tokenTiers';
+import { getUserTier, canOverwritePixel, canPlacePixel, getCooldownInfo, updateCooldownTimestamp, checkAndUpdateCooldown } from '@/lib/server/tokenTiers';
 import { DEFAULT_TIER } from '@/lib/server/tiers.config';
+import { queueDatabaseWrite, triggerQueueProcessing as queueProcessor } from '@/lib/queue';
 
 const ONE_HOUR = 60 * 60 * 1000; // 1 hour in milliseconds
 
@@ -241,21 +242,54 @@ function getProcessingFlagKey() {
 }
 
 // Helper function with retries
-async function triggerQueueProcessing(retries = 3) {
+async function legacyTriggerQueueProcessing(retries = 3) {
   try {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
-      method: 'POST',
-      headers: { 
-        'x-cron-secret': process.env.CRON_SECRET || '',
-        'origin': process.env.NEXT_PUBLIC_APP_URL || ''
+    // For serverless environments, we can directly call the cron API without making a fetch request
+    // This avoids the issue with localhost URLs in serverless environments
+    
+    // Call the queue processing directly instead of making a fetch request
+    // Import the process-queue GET handler and call it directly
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || '';
+    
+    // Only make a network request if we're NOT in a serverless environment (determined by checking for localhost)
+    // In production serverless environments, we'll skip this fetch
+    if (appUrl.includes('localhost') || appUrl.includes('127.0.0.1')) {
+      // Local development - use fetch
+      const response = await fetch(`${appUrl}/api/cron/process-queue`, {
+        method: 'POST',
+        headers: {
+          'x-cron-secret': process.env.CRON_SECRET || '',
+          'origin': appUrl
+        }
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    } else {
+      // In production - use the queue flag method instead of fetch
+      // Just set a flag that the vercel cron job will pick up
+      // This avoids the need to make a self-request which doesn't work in serverless
+      console.log('Using queue flag method for serverless environment');
+      const queueReady = (await redis.llen(getQueueName('supabase:pixels:queue'))) > 0;
+      
+      if (queueReady) {
+        // No need to make a network request - just ensure the processing flag is not set
+        // so the cron job will process it on next run
+        const processingFlagKey = getProcessingFlagKey();
+        const processingActive = await redis.get(processingFlagKey);
+        
+        if (!processingActive) {
+          console.log('Queue ready, cron job will process on next run');
+        } else {
+          console.log('Queue processing already active');
+        }
+      } else {
+        console.log('No items in queue');
       }
-    });
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    }
   } catch (error) {
     console.error('Queue trigger failed:', error);
     if (retries > 0) {
       await new Promise(resolve => setTimeout(resolve, 2000));
-      return triggerQueueProcessing(retries - 1);
+      return legacyTriggerQueueProcessing(retries - 1);
     }
   }
 }
@@ -299,34 +333,24 @@ export async function POST(request: Request) {
       await redis.rpush(usersQueue, JSON.stringify(updatedUserData));
     }
 
-    // Balance-based cooldown check (skip for admins)
-    if (balance === 0 && !isAdmin) {
-      const lastPlaced = (await redis.hget('pixel:cooldowns', walletAddress) || '0').toString();
-      if (lastPlaced && lastPlaced !== '0') {
-        const timeSinceLastPlaced = Date.now() - parseInt(lastPlaced);
-        if (timeSinceLastPlaced < DEFAULT_TIER.cooldownSeconds * 1000) {
-          return NextResponse.json({ 
-            error: `Please wait ${Math.ceil((DEFAULT_TIER.cooldownSeconds * 1000 - timeSinceLastPlaced) / 1000)} seconds`
-          }, { status: 429 });
-        }
-      }
-      // For first-time 0 balance users, continue with placement
-    }
-
-    // Regular tier-based cooldown check (skip for admins)
+    // Atomic cooldown check and update (skip for admins)
     if (!isAdmin) {
-      const tier = await getUserTier(balance);
-      console.log(`🔵 User ${walletAddress} with balance ${balance} has tier: ${tier.name} with cooldown: ${tier.cooldownSeconds}s`);
-
-      const lastPlaced = (await redis.hget('pixel:cooldowns', walletAddress) || '0').toString();
-      if (lastPlaced) {
-        const timeSinceLastPlaced = Date.now() - parseInt(lastPlaced);
-        if (timeSinceLastPlaced < tier.cooldownSeconds * 1000) {
-          return NextResponse.json({ 
-            error: `Please wait ${Math.ceil((tier.cooldownSeconds * 1000 - timeSinceLastPlaced) / 1000)} seconds`
-          }, { status: 429 });
-        }
+      // Use our new atomic function to check and update cooldown in one operation
+      const cooldownInfo = await checkAndUpdateCooldown(walletAddress);
+      
+      if (!cooldownInfo.canPlace) {
+        return NextResponse.json({ 
+          error: `Please wait ${cooldownInfo.remainingSeconds} seconds`,
+          cooldownInfo: {
+            tier: cooldownInfo.tier.name,
+            cooldownSeconds: cooldownInfo.cooldownSeconds,
+            remainingSeconds: cooldownInfo.remainingSeconds,
+            nextPlacementTime: cooldownInfo.nextPlacementTime
+          }
+        }, { status: 429 });
       }
+      
+      console.log(`🔵 User ${walletAddress} with balance ${balance} has tier: ${cooldownInfo.tier.name} with cooldown: ${cooldownInfo.cooldownSeconds}s`);
     }
 
     const { x, y, color, version } = await request.json();
@@ -407,9 +431,8 @@ export async function POST(request: Request) {
       member: JSON.stringify(pixelData)
     });
     
-    multi.hset('pixel:cooldowns', {
-      [walletAddress]: now.toString()
-    });
+    // No need to update cooldown timestamp here anymore - it's already updated atomically
+    // if user is allowed to place a pixel
     
     multi.rpush(pixelsQueue, JSON.stringify(pixelData));
     
@@ -423,45 +446,23 @@ export async function POST(request: Request) {
       hasCronSecret: !!process.env.CRON_SECRET
     });
 
-    // Trigger queue processing if either queue has enough items
-    const pixelQueueLength = await redis.llen(pixelsQueue);
+    // Check queue length and trigger processing if necessary
     const userQueueLength = await redis.llen(getQueueName('supabase:users:queue'));
-
+    const pixelQueueLength = await redis.llen(pixelsQueue);
+    
+    // Log queue stats
     console.log('📊 Queue stats:', {
       pixelQueueLength,
       userQueueLength,
       hasCronSecret: !!process.env.CRON_SECRET
     });
-
-    // Process if either queue has enough items
-    if (pixelQueueLength >= 10 || userQueueLength >= 10) {
-      // Check if processing is already active with environment-specific key
-      const processingFlagKey = getProcessingFlagKey();
-      const processingActive = await redis.get(processingFlagKey);
-      
-      if (!processingActive) {
-        // Set processing flag with 5 minute expiry
-        await redis.set(processingFlagKey, '1', {ex: 300});
-        
-        // Add logging before triggering queue processing
-        console.log('🔄 Attempting to trigger queue processing:', {
-          pixelQueueLength,
-          userQueueLength,
-          appUrl: process.env.NEXT_PUBLIC_APP_URL,
-          hasCronSecret: !!process.env.CRON_SECRET
-        });
-        
-        // Trigger processing in background
-        if (process.env.NEXT_PUBLIC_APP_URL && process.env.CRON_SECRET) {
-          triggerQueueProcessing();
-        } else {
-          console.warn('⚠️ Missing required env vars for queue processing');
-        }
-      } else {
-        console.log('ℹ️ Queue processing already active');
-      }
-    } else {
-      console.log(`ℹ️ Queue lengths below threshold (pixels: ${pixelQueueLength}, users: ${userQueueLength})`);
+    
+    // If queue has many items, trigger processing immediately instead of waiting for cron
+    if ((pixelQueueLength >= 100 || userQueueLength >= 50) && process.env.CRON_SECRET) {
+      console.log('📊 Queue threshold reached, triggering immediate processing');
+      queueProcessor().catch(err => {
+        console.error('Failed to trigger queue processing:', err);
+      });
     }
 
     // Get recent history for top users calculation - using zrange for sorted set
@@ -514,7 +515,25 @@ export async function POST(request: Request) {
 
     await triggerPusherEventWithRetry();
 
-    return NextResponse.json({ success: true, pixel: pixelData }, {
+    // No need to manually trigger processing in production anymore
+    // The Vercel cron job will automatically process the queue
+    
+    // Let the client know if queue processing is active
+    const processingFlagKey = getProcessingFlagKey();
+    const processingActive = await redis.get(processingFlagKey);
+    const queueLength = await redis.llen(pixelsQueue);
+    
+    // Just log the queue status
+    console.log(`📊 Queue status: ${queueLength} items, processing: ${processingActive ? 'active' : 'inactive'}`);
+
+    return NextResponse.json({ 
+      success: true, 
+      pixel: pixelData,
+      queue: {
+        items: queueLength,
+        processing: !!processingActive
+      }
+    }, {
       headers: {
         'Cache-Control': 'no-store, max-age=0'
       }

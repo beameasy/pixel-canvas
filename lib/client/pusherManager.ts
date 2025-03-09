@@ -1,5 +1,8 @@
 import { pusherClient } from './pusher';
 
+// Add a DEBUG flag to control logging
+const DEBUG = false; // Set to false to disable all logs
+
 class PusherManager {
   private static instance: PusherManager;
   private channel: any;
@@ -24,36 +27,47 @@ class PusherManager {
     }
   }
 
+  // Helper function for logging that only logs when DEBUG is true
+  private log(message: string, data?: any) {
+    if (DEBUG) {
+      if (data) {
+        console.log(message, data);
+      } else {
+        console.log(message);
+      }
+    }
+  }
+
   private handleVisibilityChange = () => {
     if (document.visibilityState === 'visible') {
-      console.log('🔄 PusherManager: Page became visible, checking connection');
+      this.log('🔄 PusherManager: Page became visible, checking connection');
       // When page becomes visible, force a connection check immediately
       this.checkConnectionHealth(true);
     }
   };
 
   private initializeChannel() {
-    console.log('🔄 PusherManager: Initializing channel');
+    this.log('🔄 PusherManager: Initializing channel');
     
     if (this.channel) {
-      console.log('🔄 PusherManager: Unbinding existing channel');
+      this.log('🔄 PusherManager: Unbinding existing channel');
       this.channel.unbind_all();
       pusherClient.unsubscribe('canvas');
     }
     
     // Force disconnect and reconnect of the pusher client
-    console.log('🔄 PusherManager: Disconnecting Pusher client');
+    this.log('🔄 PusherManager: Disconnecting Pusher client');
     pusherClient.disconnect();
     
-    console.log('🔄 PusherManager: Connecting Pusher client');
+    this.log('🔄 PusherManager: Connecting Pusher client');
     pusherClient.connect();
     
-    console.log('🔄 PusherManager: Subscribing to channel');
+    this.log('🔄 PusherManager: Subscribing to channel');
     this.channel = pusherClient.subscribe('canvas');
     
     // Monitor connection state changes
     pusherClient.connection.bind('state_change', (states: { current: string, previous: string }) => {
-      console.log(`📡 PusherManager: Connection state changed from ${states.previous} to ${states.current}`);
+      this.log(`📡 PusherManager: Connection state changed from ${states.previous} to ${states.current}`);
       
       if (states.current === 'connected') {
         this.reconnectAttempts = 0;
@@ -62,7 +76,7 @@ class PusherManager {
       } else if (states.current === 'disconnected' || states.current === 'failed') {
         // If we disconnect or fail, try to reconnect after a short delay
         if (!this.isReconnecting) {
-          console.log('🔄 PusherManager: Connection lost, scheduling reconnect');
+          this.log('🔄 PusherManager: Connection lost, scheduling reconnect');
           this.isReconnecting = true;
           
           // Cancel any existing reconnect timeout
@@ -72,7 +86,7 @@ class PusherManager {
           
           // Schedule a reconnect
           this.disconnectTimeout = setTimeout(() => {
-            console.log('🔄 PusherManager: Executing scheduled reconnect');
+            this.log('🔄 PusherManager: Executing scheduled reconnect');
             this.reconnect();
           }, 2000);
         }
@@ -80,13 +94,14 @@ class PusherManager {
     });
     
     this.channel.bind('pusher:subscription_succeeded', () => {
-      console.log('✅ PusherManager: Channel subscription succeeded');
+      this.log('✅ PusherManager: Channel subscription succeeded');
       this.subscribed = true;
       this.rebindHandlers();
     });
     
     // Add subscription error handling
     this.channel.bind('pusher:subscription_error', (error: any) => {
+      // Keep error logs since they might be important
       console.error('❌ PusherManager: Channel subscription failed', error);
       this.subscribed = false;
       
@@ -96,7 +111,7 @@ class PusherManager {
   }
 
   private onConnectionEstablished() {
-    console.log('✅ PusherManager: Connection established, setting up ping');
+    this.log('✅ PusherManager: Connection established, setting up ping');
     
     // Reset reconnection counters
     this.reconnectAttempts = 0;
@@ -111,10 +126,10 @@ class PusherManager {
   private rebindHandlers() {
     if (!this.channel?.subscribed) return;
     
-    console.log(`🔁 PusherManager: Rebinding handlers for ${this.eventHandlers.size} events`);
+    this.log(`🔁 PusherManager: Rebinding handlers for ${this.eventHandlers.size} events`);
     
     this.eventHandlers.forEach((handlers, eventName) => {
-      console.log(`🔁 PusherManager: Rebinding ${handlers.size} handlers for event '${eventName}'`);
+      this.log(`🔁 PusherManager: Rebinding ${handlers.size} handlers for event '${eventName}'`);
       handlers.forEach(handler => {
         this.channel.bind(eventName, (data: any) => {
           // Update last event time whenever we receive any event
@@ -126,7 +141,7 @@ class PusherManager {
   }
 
   subscribe(eventName: string, callback: (data: any) => void) {
-    console.log(`➕ PusherManager: Subscribing to event '${eventName}'`);
+    this.log(`➕ PusherManager: Subscribing to event '${eventName}'`);
     
     if (!this.eventHandlers.has(eventName)) {
       this.eventHandlers.set(eventName, new Set());
@@ -140,14 +155,14 @@ class PusherManager {
         callback(data);
       });
     } else {
-      console.log(`⚠️ PusherManager: Channel not subscribed yet, event '${eventName}' will be bound later`);
+      this.log(`⚠️ PusherManager: Channel not subscribed yet, event '${eventName}' will be bound later`);
       // If we're not subscribed yet, make sure we're connected
       this.checkConnectionHealth(true);
     }
   }
 
   unsubscribe(eventName: string, callback: (data: any) => void) {
-    console.log(`➖ PusherManager: Unsubscribing from event '${eventName}'`);
+    this.log(`➖ PusherManager: Unsubscribing from event '${eventName}'`);
     
     const handlers = this.eventHandlers.get(eventName);
     if (handlers) {
@@ -164,7 +179,7 @@ class PusherManager {
 
   reconnect() {
     if (this.isReconnecting) {
-      console.log('🔄 PusherManager: Already reconnecting, skipping duplicate attempt');
+      this.log('🔄 PusherManager: Already reconnecting, skipping duplicate attempt');
       return;
     }
     
@@ -178,7 +193,7 @@ class PusherManager {
     const delay = Math.min(1000 * Math.pow(1.5, this.reconnectAttempts), 10000);
     this.reconnectAttempts++;
     
-    console.log(`🔄 PusherManager: Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    this.log(`🔄 PusherManager: Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
     this.subscribed = false;
     
     // Completely disconnect and unsubscribe first
@@ -191,7 +206,7 @@ class PusherManager {
     pusherClient.disconnect();
     
     setTimeout(() => {
-      console.log('🔄 PusherManager: Executing reconnect after delay');
+      this.log('🔄 PusherManager: Executing reconnect after delay');
       this.initializeChannel();
     }, delay);
   }
@@ -209,18 +224,18 @@ class PusherManager {
       reconnectAttempts: this.reconnectAttempts
     };
     
-    console.log('🔍 PusherManager: Connection health check', connectionStatus);
+    this.log('🔍 PusherManager: Connection health check', connectionStatus);
     
     // Check if we're stale - no events for 5 minutes
     const isConnectionStale = this.lastEventTime > 0 && (Date.now() - this.lastEventTime > 5 * 60 * 1000);
     
     if (forceReconnect || !this.isConnected() || isConnectionStale) {
       if (this.isReconnecting) {
-        console.log('🔄 PusherManager: Already reconnecting during health check');
+        this.log('🔄 PusherManager: Already reconnecting during health check');
         return;
       }
       
-      console.log('🔄 PusherManager: Connection health check failed, reconnecting', {
+      this.log('🔄 PusherManager: Connection health check failed, reconnecting', {
         forceReconnect,
         isConnected: this.isConnected(),
         isConnectionStale

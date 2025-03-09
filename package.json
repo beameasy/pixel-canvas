@@ -24,6 +24,7 @@
     "@upstash/qstash": "^2.7.21",
     "@upstash/redis": "^1.34.4",
     "@urql/core": "^5.1.0",
+    "@vercel/speed-insights": "^1.2.0",
     "alchemy-sdk": "^3.5.2",
     "autoprefixer": "^10.4.14",
     "dotenv": "^16.4.7",
@@ -52,7 +53,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "eslint": "^9",
+    "eslint": "^8.57.1",
     "eslint-config-next": "14.1.0",
     "ts-node": "^10.9.2",
     "typescript": "^5"

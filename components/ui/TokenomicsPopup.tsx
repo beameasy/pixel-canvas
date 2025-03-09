@@ -64,8 +64,7 @@ export default function TokenomicsPopup({ isOpen, onClose, configVersion }: Toke
   
   return (
     <div 
-      className="fixed inset-0 z-[90] flex items-start justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-sm overflow-y-auto"
-      style={{ paddingTop: "80px" }}
+      className="fixed inset-x-0 top-24 bottom-0 z-[90] flex items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-sm"
       ref={popupRef}
       onClick={(e) => {
         // Prevent click event from propagating when clicking inside the popup content
@@ -75,11 +74,13 @@ export default function TokenomicsPopup({ isOpen, onClose, configVersion }: Toke
       }}
     >
       <div 
-        className="bg-slate-800 border border-slate-700 rounded-lg max-w-[95vw] sm:max-w-md md:max-w-lg lg:max-w-xl w-full max-h-[85vh] sm:max-h-[80vh] md:max-h-[85vh] overflow-y-auto mt-4"
-        onClick={(e) => e.stopPropagation()} // Prevent clicks inside the popup from closing it
+        className="bg-slate-800 border border-slate-700 rounded-lg w-[98vw] sm:w-[90vw] md:w-[700px] lg:w-[800px] flex flex-col"
+        style={{ maxHeight: 'calc(90vh - 48px)' }}
+        onClick={(e) => e.stopPropagation()}
       >
-        <div className="sticky top-0 z-10 bg-slate-900 px-3 py-2 flex justify-between items-center border-b border-slate-700">
-          <h1 className="text-[#FFD700] text-base font-mono">Welcome to Billboard on Base!</h1>
+        <div className="bg-slate-900 px-3 py-1.5 flex justify-between items-center border-b border-slate-700 rounded-t-lg">
+          <div className="w-6"></div> {/* Spacer to balance the close button */}
+          <h1 className="text-[#FFD700] text-base font-mono text-center flex-grow">Welcome to Billboard on Base!</h1>
           <button 
             onClick={handleClosePopup}
             className="text-slate-400 hover:text-white ml-2"
@@ -92,71 +93,74 @@ export default function TokenomicsPopup({ isOpen, onClose, configVersion }: Toke
           </button>
         </div>
           
-        <div className="p-3 sm:p-4 space-y-2 sm:space-y-2 text-slate-300 font-mono text-xs">
-          <p className="mb-1">
+        <div className="p-2 sm:p-3 space-y-1.5 text-slate-300 font-mono text-xs flex-grow">
+          <p className="mb-0.5">
             Holding $BILLBOARD tokens provides benefits for pixel placement:
           </p>
           
-          <div className="bg-slate-800/50 p-2 border border-slate-700 rounded-md mb-1">
+          <div className="bg-slate-800/50 p-1.5 border border-slate-700 rounded-md mb-0.5">
             <p className="text-emerald-300 mb-0.5">Protection System:</p>
-            <p>
+            <p className="text-[10px] sm:text-xs leading-tight">
               When you place a pixel, it's protected for the time shown in your tier. During this time, only users with <span className="text-yellow-300">more tokens than you currently hold</span> can overwrite your pixel.
             </p>
             
-            <p className="mt-2">
+            <p className="mt-0.5 text-[10px] sm:text-xs leading-tight">
               <span className="text-amber-300">Dynamic Protection:</span> If you buy more tokens, your pixels immediately gain stronger protection, if you sell, they become more vulnerable.
             </p>
           </div>
           
-          <h2 className="text-[#FFD700] text-sm font-mono mb-0.5 pt-0.5">$BILLBOARD Token Tiers</h2>
+          <h2 className="text-[#FFD700] text-sm font-mono mb-0.5 text-center">$BILLBOARD Token Tiers</h2>
           
           {/* Table header with centered text */}
-          <div className="grid grid-cols-3 text-center border-b border-slate-700 py-1">
-            <div className="text-emerald-400 px-1">Tokens</div>
-            <div className="text-emerald-400 px-1">Cooldown</div>
-            <div className="text-emerald-400 px-1">Protection</div>
+          <div className="grid grid-cols-3 text-center border-b border-slate-700 py-0.5">
+            <div className="text-emerald-400 px-1 text-[10px] sm:text-xs">Tokens</div>
+            <div className="text-emerald-400 px-1 text-[10px] sm:text-xs">Cooldown</div>
+            <div className="text-emerald-400 px-1 text-[10px] sm:text-xs">Protection</div>
           </div>
           
-          {tiers.map((tier, index) => {
-            // Get the color for the tokens amount based on tier
-            let tierColor = "";
-            switch(tier.name) {
-              case "Ultimate": tierColor = "text-purple-400 font-bold"; break;
-              case "Legendary": tierColor = "text-emerald-400"; break;
-              case "Diamond": tierColor = "text-[#FFD700]"; break;
-              case "Platinum": tierColor = "text-[#E5E4E2]"; break;
-              case "Gold": tierColor = "text-[#FFD700]"; break;
-              case "Silver": tierColor = "text-[#C0C0C0]"; break;
-              case "Bronze": tierColor = "text-[#CD7F32]"; break;
-              case "Legend": tierColor = "text-white"; break;
-              default: tierColor = "text-white";
-            }
-            
-            return (
-              <div 
-                key={tier.name} 
-                className={`grid grid-cols-3 text-center py-1 ${
-                  index < tiers.length - 1 ? "border-b border-slate-700/50" : ""
-                }`}
-              >
-                <div className={`${tierColor} px-1`}>{formatTokenAmount(tier.minTokens)}</div>
-                <div className="px-1">{tier.cooldownSeconds}s</div>
-                <div className="px-1">
-                  {tier.protectionTime > 0 ? `${tier.protectionTime}h` : 'None'}
+          {/* No need for scrolling container, show all tiers directly */}
+          <div>
+            {tiers.map((tier, index) => {
+              // Get the color for the tokens amount based on tier
+              let tierColor = "";
+              switch(tier.name) {
+                case "Ultimate": tierColor = "text-purple-400 font-bold"; break;
+                case "Legendary": tierColor = "text-emerald-400"; break;
+                case "Diamond": tierColor = "text-[#FFD700]"; break;
+                case "Platinum": tierColor = "text-[#E5E4E2]"; break;
+                case "Gold": tierColor = "text-[#FFD700]"; break;
+                case "Silver": tierColor = "text-[#C0C0C0]"; break;
+                case "Bronze": tierColor = "text-[#CD7F32]"; break;
+                case "Legend": tierColor = "text-white"; break;
+                default: tierColor = "text-white";
+              }
+              
+              return (
+                <div 
+                  key={tier.name} 
+                  className={`grid grid-cols-3 text-center py-0.5 ${
+                    index < tiers.length - 1 ? "border-b border-slate-700/50" : ""
+                  }`}
+                >
+                  <div className={`${tierColor} px-1 text-[10px] sm:text-xs`}>{formatTokenAmount(tier.minTokens)}</div>
+                  <div className="px-1 text-[10px] sm:text-xs">{tier.cooldownSeconds}s</div>
+                  <div className="px-1 text-[10px] sm:text-xs">
+                    {tier.protectionTime > 0 ? `${tier.protectionTime}h` : 'None'}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
 
           {/* Display version info more subtly */}
-          <div className="text-xs text-slate-500 text-center -mt-1 mb-1">
+          <div className="text-[9px] sm:text-[10px] text-slate-500 text-center">
             v{configVersion}
           </div>
           
-          <div className="flex justify-center mt-2 sm:mt-3">
+          <div className="flex justify-center mt-1">
             <button
               onClick={handleClosePopup}
-              className="bg-blue-600 hover:bg-blue-700 text-white font-mono text-sm px-6 py-2 rounded-md"
+              className="bg-blue-600 hover:bg-blue-700 text-white font-mono text-xs px-4 py-1 rounded-md"
             >
               Let's start placing pixels!
             </button>

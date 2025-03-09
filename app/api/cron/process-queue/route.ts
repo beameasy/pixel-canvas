@@ -3,6 +3,7 @@ import { redis, getQueueName } from '@/lib/server/redis';
 import { getAdminClient, getTableName } from '../../_lib/supabaseAdmin';
 import { v4 as uuidv4 } from 'uuid';
 import { SupabaseClient } from '@supabase/supabase-js';
+import { filterForTableSchema, USER_TABLE_FIELDS, PIXEL_TABLE_FIELDS } from '@/lib/database-schema';
 
 export const runtime = 'edge'
 export const dynamic = 'force-dynamic'
@@ -33,8 +34,19 @@ async function handleFullBackup(supabase: SupabaseClient) {
       try {
         // Ensure value is a string before parsing
         const pixel = JSON.parse(typeof value === 'string' ? value : String(value));
+        
+        // Ensure Farcaster data is properly preserved
+        const processedPixel = {
+          ...pixel,
+          wallet_address: pixel.wallet_address?.toLowerCase(), // Ensure lowercase
+          farcaster_username: pixel.farcaster_username ?? null,
+          farcaster_pfp: pixel.farcaster_pfp ?? null,
+          // Ensure version field is included
+          version: typeof pixel.version === 'number' ? pixel.version : 1
+        };
+        
         const pixelsQueue = getQueueName('supabase:pixels:queue');
-        await redis.rpush(pixelsQueue, JSON.stringify(pixel));
+        await redis.rpush(pixelsQueue, JSON.stringify(processedPixel));
         stats.pixels++;
       } catch (e) {
         console.error(`Failed to process pixel ${key}:`, e);
@@ -118,11 +130,36 @@ async function handleFullBackup(supabase: SupabaseClient) {
 
 export async function GET(request: Request) {
   try {
-    // Check for valid cron secret
+    // Check for valid cron secret or Vercel cron auth
     const cronSecret = request.headers.get('x-cron-secret');
-    if (cronSecret !== process.env.CRON_SECRET) {
+    const vercelCronAuth = request.headers.get('Authorization');
+    
+    // Allow either our own CRON_SECRET or the Vercel-provided Authorization header
+    const isVercelCron = vercelCronAuth === `Bearer ${process.env.CRON_SECRET}`;
+    const isManualCron = cronSecret === process.env.CRON_SECRET;
+    
+    if (!isVercelCron && !isManualCron) {
+      console.log('🔒 Unauthorized queue processing attempt');
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    
+    // Set a processing flag to prevent concurrent processing
+    const processingFlagKey = getProcessingFlagKey();
+    const processingActive = await redis.get(processingFlagKey);
+    
+    if (processingActive) {
+      console.log('⏳ Queue processing already active, skipping');
+      return NextResponse.json({ 
+        message: 'Queue processing already active',
+        processingStartedAt: processingActive
+      });
+    }
+    
+    // Set processing flag with 5 minute expiry
+    const processingStartTime = Date.now();
+    await redis.set(processingFlagKey, processingStartTime.toString(), {ex: 300});
+    
+    console.log(`🔄 Queue processor triggered via: ${isVercelCron ? 'Vercel Cron' : 'Manual Trigger'}`);
     
     // Get queue stats for monitoring
     const pixelsQueue = getQueueName('supabase:pixels:queue');
@@ -168,25 +205,73 @@ export async function GET(request: Request) {
             delete parsed.farcaster_updated_at;
           }
           
-          acc[parsed.wallet_address] = parsed;
+          // Remove created_at field if it exists (not in our schema)
+          if (parsed.created_at) {
+            delete parsed.created_at;
+          }
+          
+          // Ensure timestamp fields are properly formatted
+          if (parsed.last_active && !(parsed.last_active instanceof Date)) {
+            parsed.last_active = new Date(parsed.last_active).toISOString();
+          }
+          
+          if (parsed.updated_at && !(parsed.updated_at instanceof Date)) {
+            parsed.updated_at = new Date(parsed.updated_at).toISOString();
+          } else if (!parsed.updated_at) {
+            // Always include updated_at
+            parsed.updated_at = new Date().toISOString();
+          }
+          
+          // Ensure Farcaster fields are preserved properly
+          const processedUser = {
+            ...parsed,
+            wallet_address: parsed.wallet_address?.toLowerCase(), // Ensure lowercase
+            // Ensure Farcaster data is preserved (null is acceptable, undefined is not)
+            farcaster_username: parsed.farcaster_username ?? null,
+            farcaster_pfp: parsed.farcaster_pfp ?? null,
+            // Ensure token_balance is always included (default to 0 if missing)
+            token_balance: parsed.token_balance ?? 0
+          };
+          
+          acc[processedUser.wallet_address] = processedUser;
           return acc;
         }, {})
       );
       
       console.log('📋 Processing unique users:', uniqueUsers.length);
       
+      // Log a sample user for debugging
+      if (uniqueUsers.length > 0) {
+        const sampleUser = uniqueUsers[0];
+        console.log(`💾 Sample user data being written:`, JSON.stringify({
+          wallet_address: sampleUser.wallet_address,
+          farcaster_username: sampleUser.farcaster_username,
+          farcaster_pfp: sampleUser.farcaster_pfp !== null ? '[present]' : null,
+          token_balance: sampleUser.token_balance || 0
+        }));
+      }
+      
+      // Apply schema filtering to ensure only valid fields are sent
+      const validUsers = uniqueUsers.map(user => filterForTableSchema(user, USER_TABLE_FIELDS));
+      
       const { error: userError } = await supabase
         .from(getTableName('users'))
-        .upsert(uniqueUsers, { 
+        .upsert(validUsers, { 
           onConflict: 'wallet_address',
           ignoreDuplicates: false 
         });
         
       if (userError) {
         console.error('❌ Error upserting users:', userError);
+        // Log a sample payload to help debug
+        if (validUsers.length > 0) {
+          console.error('Sample payload that caused error:', JSON.stringify(validUsers[0]));
+          console.error('Schema validation - fields present in sample:', Object.keys(validUsers[0]));
+          console.error('Expected fields:', USER_TABLE_FIELDS);
+        }
       } else {
         await redis.del(usersQueue);
-        console.log('✅ Processed users:', uniqueUsers.length);
+        console.log('✅ Processed users:', validUsers.length);
       }
     }
 
@@ -242,20 +327,46 @@ export async function GET(request: Request) {
         // Clean the batch - properly handle the version field
         const processedBatch = batch.map(pixel => {
           const { id, ...pixelWithoutId } = pixel;
+          
+          // Ensure Farcaster data is preserved
+          // If farcaster data fields are undefined, ensure they're set to null rather than undefined
+          // This prevents them from being dropped by the Supabase client
           return {
             ...pixelWithoutId,
             wallet_address: pixelWithoutId.wallet_address?.toLowerCase(), // Ensure lowercase
+            // Ensure Farcaster data is preserved (null is acceptable, undefined is not)
+            farcaster_username: pixelWithoutId.farcaster_username ?? null,
+            farcaster_pfp: pixelWithoutId.farcaster_pfp ?? null,
+            // Ensure token_balance is preserved if available
+            token_balance: pixelWithoutId.token_balance ?? null,
             // Ensure version field is included and is a number
             version: typeof pixelWithoutId.version === 'number' ? pixelWithoutId.version : 1
           };
         });
         
+        console.log(`💾 Sample pixel data being written:`, processedBatch[0] ? JSON.stringify({
+          x: processedBatch[0].x,
+          y: processedBatch[0].y, 
+          farcaster_username: processedBatch[0].farcaster_username,
+          farcaster_pfp: processedBatch[0].farcaster_pfp !== null ? '[present]' : null,
+          token_balance: processedBatch[0].token_balance
+        }) : 'No pixels in batch');
+        
+        // Apply schema filtering to ensure only valid fields are sent
+        const validPixels = processedBatch.map(pixel => filterForTableSchema(pixel, PIXEL_TABLE_FIELDS));
+        
         const { error: pixelError } = await supabase
           .from(getTableName('pixels'))
-          .insert(processedBatch);
+          .insert(validPixels);
         
         if (pixelError) {
           console.error('❌ Error inserting pixels batch:', pixelError);
+          // Log a sample payload to help debug
+          if (validPixels.length > 0) {
+            console.error('Sample payload that caused error:', JSON.stringify(validPixels[0]));
+            console.error('Schema validation - fields present in sample:', Object.keys(validPixels[0]));
+            console.error('Expected fields:', PIXEL_TABLE_FIELDS);
+          }
         } else {
           successCount += batch.length;
           

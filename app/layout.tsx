@@ -7,16 +7,25 @@ import { useEffect } from 'react';
 import Header from '@/components/layout/Header';
 import { usePrivy } from '@privy-io/react-auth';
 import { usePathname } from 'next/navigation';
+import { SpeedInsights } from "@vercel/speed-insights/next"
 
 function AppContent({ children }: { children: React.ReactNode }) {
   const { login, authenticated, user, logout } = usePrivy();
 
-  // Add a delay for wallet initialization
+  // Consolidated initialization with prioritized tasks
   useEffect(() => {
-    // Give time for wallet proxies to initialize before attempting connections
-    const timer = setTimeout(() => {
-      // Any wallet initialization code here
-    }, 1000); // 1 second delay
+    // Handle critical initialization immediately
+    const immediateInit = () => {
+      // Any critical initialization that shouldn't be delayed
+    };
+    
+    // Handle delayed initialization (for wallet proxies and other features)
+    const delayedInit = () => {
+      // Wallet initialization code here
+    };
+    
+    immediateInit();
+    const timer = setTimeout(delayedInit, 1000);
     
     return () => clearTimeout(timer);
   }, []);
@@ -55,51 +64,56 @@ function AppContent({ children }: { children: React.ReactNode }) {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
 
+  // Centralized Pusher connection management
   useEffect(() => {
-    // Check and reconnect Pusher on route changes
+    console.log('🚀 Layout: Initializing Pusher connection on app load');
+    
+    // Initial connection setup
+    pusherManager.reconnect();
+    
+    // Set up reconnection strategy
+    const connectionCheck = () => {
+      if (!pusherManager.isConnected()) {
+        console.log('🔄 Reconnecting Pusher...');
+        pusherManager.reconnect();
+      }
+    };
+    
+    // Initial connection check
+    const initialCheck = setTimeout(connectionCheck, 1000);
+    
+    // Setup visibility change handler for reconnection
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        connectionCheck();
+      }
+    };
+    
+    // Setup online event handler
+    const handleOnline = () => {
+      console.log('🌐 Network online, checking Pusher connection');
+      connectionCheck();
+    };
+    
+    // Set up event listeners
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('online', handleOnline);
+    
+    return () => {
+      clearTimeout(initialCheck);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.addEventListener('online', handleOnline);
+    };
+  }, []);
+
+  // Route change handler with simplified logic
+  useEffect(() => {
     console.log('🔄 Layout: Route changed to', pathname);
+    // Only check connection status on route change, no additional initialization
     if (!pusherManager.isConnected()) {
       console.log('🔌 Layout: Reconnecting Pusher after route change');
       pusherManager.reconnect();
     }
-
-    // Initial connection check
-    const timer = setTimeout(() => {
-      if (!pusherManager.isConnected()) {
-        console.log('🔄 Layout: Initial connection check failed, requesting reconnect');
-        pusherManager.reconnect();
-      }
-    }, 2000);
-
-    // Handle visibility change (tab focus/blur, sleep/wake)
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        console.log('🔄 Layout: Page became visible, checking connection');
-        if (!pusherManager.isConnected()) {
-          console.log('🔌 Layout: Connection lost, attempting to reconnect');
-          pusherManager.reconnect();
-        }
-      }
-    };
-
-    // Handle online/offline events
-    const handleOnline = () => {
-      console.log('🌐 Layout: Browser came online, checking connection');
-      if (!pusherManager.isConnected()) {
-        console.log('🔌 Layout: Reconnecting after coming online');
-        pusherManager.reconnect();
-      }
-    };
-
-    // Add event listeners
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    window.addEventListener('online', handleOnline);
-
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      window.removeEventListener('online', handleOnline);
-    };
   }, [pathname]);
 
   return (
@@ -110,6 +124,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             {children}
           </AppContent>
         </Providers>
+        <SpeedInsights />
       </body>
     </html>
   );

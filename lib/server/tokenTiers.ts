@@ -90,8 +90,9 @@ export async function canPlacePixel(walletAddress: string): Promise<boolean> {
   // Admins can always place pixels, bypassing cooldown
   if (isAdmin) return true;
   
-  const lastPlaced = await redis.get(`pixel:cooldown:${walletAddress}`);
-  if (!lastPlaced) return true;
+  // Get the last placed timestamp from Redis
+  const lastPlaced = await redis.hget('pixel:cooldowns', walletAddress) as string | null;
+  if (!lastPlaced || lastPlaced === '0') return true; // No cooldown if never placed before
 
   // Get user's tier based on token balance
   const balance = await getTokenBalance(walletAddress);
@@ -99,10 +100,189 @@ export async function canPlacePixel(walletAddress: string): Promise<boolean> {
   const cooldownMs = tier.cooldownSeconds * 1000;
 
   const now = Date.now();
-  const lastPlacedTime = lastPlaced as string | null;
-  const timeSinceLastPlaced = now - (lastPlacedTime ? parseInt(lastPlacedTime) : 0);
+  const lastPlacedTime = parseInt(lastPlaced);
+  const timeSinceLastPlaced = now - lastPlacedTime;
   
+  // Compare with cooldown period based on user's tier
   return timeSinceLastPlaced >= cooldownMs;
+}
+
+/**
+ * Get the time remaining in seconds before a user can place their next pixel
+ * @param walletAddress User's wallet address
+ * @returns Object with cooldown information, or null if no cooldown
+ */
+export async function getCooldownInfo(walletAddress: string): Promise<{
+  canPlace: boolean;
+  tier: TokenTier;
+  cooldownSeconds: number;
+  remainingSeconds: number;
+  nextPlacementTime: number;
+} | null> {
+  // Check if wallet is an admin
+  const isAdmin = (process.env.ADMIN_WALLETS || '')
+    .split(',')
+    .map(wallet => wallet.trim().toLowerCase())
+    .filter(wallet => wallet.length > 0)
+    .includes(walletAddress.toLowerCase());
+  
+  // Admins have no cooldown
+  if (isAdmin) {
+    return {
+      canPlace: true,
+      tier: TIERS[0],
+      cooldownSeconds: 0,
+      remainingSeconds: 0,
+      nextPlacementTime: Date.now()
+    };
+  }
+  
+  const lastPlaced = await redis.hget('pixel:cooldowns', walletAddress) as string | null;
+  if (!lastPlaced || lastPlaced === '0') {
+    // No cooldown if never placed before
+    const balance = await getTokenBalance(walletAddress);
+    const tier = await getUserTier(balance);
+    return {
+      canPlace: true,
+      tier,
+      cooldownSeconds: tier.cooldownSeconds,
+      remainingSeconds: 0,
+      nextPlacementTime: Date.now()
+    };
+  }
+
+  const balance = await getTokenBalance(walletAddress);
+  const tier = await getUserTier(balance);
+  const cooldownMs = tier.cooldownSeconds * 1000;
+
+  const now = Date.now();
+  const lastPlacedTime = parseInt(lastPlaced);
+  const timeSinceLastPlaced = now - lastPlacedTime;
+  const cooldownRemaining = cooldownMs - timeSinceLastPlaced;
+  
+  const canPlace = cooldownRemaining <= 0;
+  const remainingSeconds = Math.max(0, Math.ceil(cooldownRemaining / 1000));
+  const nextPlacementTime = lastPlacedTime + cooldownMs;
+
+  return {
+    canPlace,
+    tier,
+    cooldownSeconds: tier.cooldownSeconds,
+    remainingSeconds,
+    nextPlacementTime
+  };
+}
+
+/**
+ * Check cooldown and update timestamp atomically if allowed
+ * @param walletAddress User's wallet address
+ * @returns Object with cooldown check result and new timestamp if updated
+ */
+export async function checkAndUpdateCooldown(walletAddress: string): Promise<{
+  canPlace: boolean;
+  tier: TokenTier;
+  cooldownSeconds: number;
+  remainingSeconds: number;
+  nextPlacementTime: number;
+  updatedAt?: number;
+}> {
+  // Check if wallet is an admin
+  const isAdmin = (process.env.ADMIN_WALLETS || '')
+    .split(',')
+    .map(wallet => wallet.trim().toLowerCase())
+    .filter(wallet => wallet.length > 0)
+    .includes(walletAddress.toLowerCase());
+  
+  // Admins have no cooldown
+  if (isAdmin) {
+    const now = Date.now();
+    await redis.hset('pixel:cooldowns', {
+      [walletAddress]: now.toString()
+    });
+    return {
+      canPlace: true,
+      tier: TIERS[0],
+      cooldownSeconds: 0,
+      remainingSeconds: 0,
+      nextPlacementTime: now,
+      updatedAt: now
+    };
+  }
+  
+  const balance = await getTokenBalance(walletAddress);
+  const tier = await getUserTier(balance);
+  const cooldownMs = tier.cooldownSeconds * 1000;
+  
+  // Use a Lua script to make the check and update atomic
+  const now = Date.now();
+  const script = `
+    local lastPlaced = redis.call('HGET', 'pixel:cooldowns', ARGV[1])
+    if not lastPlaced or lastPlaced == '0' then
+      redis.call('HSET', 'pixel:cooldowns', ARGV[1], ARGV[2])
+      return 1
+    end
+    
+    local cooldownMs = tonumber(ARGV[3])
+    local now = tonumber(ARGV[2])
+    local lastPlacedTime = tonumber(lastPlaced)
+    local timeSinceLastPlaced = now - lastPlacedTime
+    
+    if timeSinceLastPlaced >= cooldownMs then
+      redis.call('HSET', 'pixel:cooldowns', ARGV[1], ARGV[2])
+      return 1
+    end
+    
+    return 0
+  `;
+  
+  // Execute the script
+  const result = await redis.eval(
+    script,
+    [],
+    [walletAddress, now.toString(), cooldownMs.toString()]
+  );
+  
+  const canPlace = result === 1;
+  
+  if (!canPlace) {
+    // If not allowed to place, get the remaining cooldown time
+    const lastPlaced = await redis.hget('pixel:cooldowns', walletAddress) as string;
+    const lastPlacedTime = parseInt(lastPlaced);
+    const timeSinceLastPlaced = now - lastPlacedTime;
+    const cooldownRemaining = cooldownMs - timeSinceLastPlaced;
+    const remainingSeconds = Math.max(0, Math.ceil(cooldownRemaining / 1000));
+    const nextPlacementTime = lastPlacedTime + cooldownMs;
+    
+    return {
+      canPlace,
+      tier,
+      cooldownSeconds: tier.cooldownSeconds,
+      remainingSeconds,
+      nextPlacementTime
+    };
+  }
+  
+  return {
+    canPlace: true,
+    tier,
+    cooldownSeconds: tier.cooldownSeconds,
+    remainingSeconds: 0,
+    nextPlacementTime: now + cooldownMs,
+    updatedAt: now
+  };
+}
+
+/**
+ * Update the user's cooldown timestamp in Redis
+ * @param walletAddress User's wallet address
+ * @returns The timestamp that was set
+ */
+export async function updateCooldownTimestamp(walletAddress: string): Promise<number> {
+  const now = Date.now();
+  await redis.hset('pixel:cooldowns', {
+    [walletAddress]: now.toString()
+  });
+  return now;
 }
 
 export async function canOverwritePixel(

@@ -195,6 +195,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Add new state near other state declarations
   const [cooldownSeconds, setCooldownSeconds] = useState<number>(0);
   const [nextPlacementTime, setNextPlacementTime] = useState<number | null>(null);
+  const [canvasError, setCanvasError] = useState(false);
 
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [flashMessage, setFlashMessage] = useState<string | null>(null);
@@ -504,76 +505,72 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     ctx.restore();
   }, [canvasState.view, PIXEL_SIZE]);
 
-  // Update the initial load effect
+  // Update the initial load effect - optimized to reduce waterfall loading
   useEffect(() => {
     if (mountedRef.current) return;
     mountedRef.current = true;
 
+    // Separate UI initialization from data loading
+    const initializeUI = () => {
+      // Draw initial white background immediately
+      const canvas = canvasRef.current;
+      if (!canvas) return false;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return false;
+      
+      // Set background immediately for better UX
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      return true;
+    };
+
     const loadInitial = async () => {
       try {
-        // Draw white background immediately before data loads
-        const canvas = canvasRef.current;
-        if (canvas) {
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-          }
-        }
+        // 1. Initialize UI first for immediate visual feedback
+        if (!initializeUI()) return;
         
-        // Then proceed with data loading
-        // Check if user has recently placed a pixel
-        const pixelPlacedAt = localStorage.getItem('pixel_placed_at');
-        const shouldForceRefresh = pixelPlacedAt ? 
-                                   (Date.now() - parseInt(pixelPlacedAt)) < 60000 : false; // Within last minute
-        
-        // Start listening for real-time updates before loading full state
+        // 2. Start real-time updates connection in parallel with other operations
         const channel = getCanvasChannel();
         channel.bind('pusher:subscription_succeeded', () => {
           setPusherConnected(true);
         });
-
-        // Then load the full state, forcing refresh if needed
-        await loadCanvasState(shouldForceRefresh); 
         
-        // Clear the placed pixel flag if it was used
+        // 3. Check if we need to force refresh (recent pixel placement)
+        const pixelPlacedAt = localStorage.getItem('pixel_placed_at');
+        const shouldForceRefresh = pixelPlacedAt ? 
+                                  (Date.now() - parseInt(pixelPlacedAt)) < 60000 : false;
+        
+        // 4. Load full canvas data
+        await loadCanvasState(shouldForceRefresh);
+        
+        // Clear flag if used
         if (shouldForceRefresh) {
           localStorage.removeItem('pixel_placed_at');
         }
-        
-        // Handle subsequent real-time updates
-        channel.bind('pixel-placed', (data: PixelPlacedEvent) => {
-          if (!pusherConnected || !data.pixel.wallet_address) return;
-          queuePixelUpdate({
-            x: data.pixel.x,
-            y: data.pixel.y,
-            color: data.pixel.color,
-            wallet_address: data.pixel.wallet_address
-          });
-        });
       } catch (error) {
-        logger.error('Failed to load initial data:', error);
+        console.error("Error in loadInitial:", error);
+        setCanvasError(true);
       }
     };
 
     loadInitial();
   }, []);
 
-  // Single useEffect to handle profile and balance
+  // Separate useEffect for profile/balance checking - runs after auth is ready
   useEffect(() => {
+    // Only run when auth requirements are met
+    if (!authenticated || !profileReady) return;
+    
     const checkProfileAndBalance = async () => {
-      if (!authenticated || !profileReady) {
-        return; // Don't attempt if not authenticated or profile not ready
-      }
-      
       try {
-        // Now this will only run after profile is created
         const token = await getAccessToken();
+        if (!token) return;
         
         const balanceResponse = await fetch("/api/users/balance", {
           headers: {
             'x-wallet-address': address || '',
-            ...(token && { 'x-privy-token': token })
+            'x-privy-token': token
           }
         });
         
@@ -595,9 +592,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         logger.error("Failed to fetch profile/balance:", error);
       }
     };
-    
+
     checkProfileAndBalance();
-  }, [authenticated, profileReady]);
+  }, [authenticated, profileReady, address]);
 
   // 3. Defer non-critical UI setup
   useEffect(() => {
@@ -1836,6 +1833,19 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   // Update handlePixelPlacement to use clearPreviewPixel
   const handlePixelPlacement = async (x: number, y: number, color: string) => {
     try {
+      // Sanitize coordinates - ensure they're valid integers within bounds
+      const gridX = Math.floor(x);
+      const gridY = Math.floor(y);
+      
+      // Verify coordinates are in bounds (0 to GRID_SIZE-1)
+      const GRID_SIZE = 400; // Should match server GRID_SIZE
+      if (gridX < 0 || gridX >= GRID_SIZE || gridY < 0 || gridY >= GRID_SIZE) {
+        logger.error('⚠️ Invalid coordinates:', { originalX: x, originalY: y, gridX, gridY });
+        setFlashMessage(`Invalid coordinates (${gridX}, ${gridY}). Must be between 0 and ${GRID_SIZE-1}.`);
+        clearPreviewPixel();
+        return false;
+      }
+      
       // Check if the wallet is banned before proceeding
       if (isBanned) {
         logger.log('🚫 Cannot place pixel: Wallet is banned');
@@ -1844,14 +1854,14 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         return false;
       }
       
-      logger.log('🎨 Starting pixel placement:', { x, y, color });
-      const previousPixel = canvasState.pixels.get(`${x},${y}`);
+      logger.log('🎨 Starting pixel placement:', { x: gridX, y: gridY, color });
+      const previousPixel = canvasState.pixels.get(`${gridX},${gridY}`);
       logger.log('🎨 Previous pixel state:', previousPixel);
 
       // Create a temporary pixel for optimistic update
       const tempPixel: PixelData = {
-        x, 
-        y, 
+        x: gridX, 
+        y: gridY, 
         color,
         wallet_address: address || '',
         farcaster_username: userProfile?.farcaster_username || null,
@@ -1866,7 +1876,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       // Apply optimistic update immediately
       setCanvasState(prev => {
         const newPixels = new Map(prev.pixels);
-        newPixels.set(`${x},${y}`, tempPixel);
+        newPixels.set(`${gridX},${gridY}`, tempPixel);
         return {
           ...prev,
           pixels: newPixels
@@ -1883,11 +1893,11 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
           // Add cache purge headers for CDN
           'Cache-Control': 'no-cache',
           'Cache-Purge-Tags': 'canvas_load',
-          'Surrogate-Key': `pixel-${x}-${y}` // For targeted purging of this pixel in the CDN
+          'Surrogate-Key': `pixel-${gridX}-${gridY}` // For targeted purging of this pixel in the CDN
         },
         body: JSON.stringify({ 
-          x, 
-          y, 
+          x: gridX, 
+          y: gridY, 
           color,
           version: previousPixel?.version || 0  // Send current version for conflict detection
         })
@@ -1904,9 +1914,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         setCanvasState(prev => {
           const newPixels = new Map(prev.pixels);
           if (previousPixel) {
-            newPixels.set(`${x},${y}`, previousPixel);
+            newPixels.set(`${gridX},${gridY}`, previousPixel);
           } else {
-            newPixels.delete(`${x},${y}`);
+            newPixels.delete(`${gridX},${gridY}`);
           }
           return {
             ...prev,
@@ -1980,7 +1990,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       
       setCanvasState(prev => {
         const newPixels = new Map(prev.pixels);
-        newPixels.set(`${x},${y}`, data.pixel);
+        newPixels.set(`${gridX},${gridY}`, data.pixel);
         return {
           ...prev,
           pixels: newPixels

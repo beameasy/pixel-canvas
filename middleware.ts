@@ -113,6 +113,39 @@ export async function validatePrivyToken(token: string): Promise<string | null> 
   }
 }
 
+// Add function to validate wallet ownership against token
+async function validateWalletOwnership(privyId: string, walletAddress: string): Promise<boolean> {
+  try {
+    // First check if we have an existing verified association
+    const userData = await redis.hget('users', walletAddress);
+    if (userData) {
+      const parsedData = typeof userData === 'string' ? JSON.parse(userData) : userData;
+      if (parsedData.privy_id === privyId) {
+        return true;
+      }
+    }
+    
+    // For newly connecting wallets, we need an existing mapping
+    // This security check ensures a token issued for one wallet can't be used for another
+    const privyUserData = await redis.hget('privy:wallet_mappings', privyId);
+    if (privyUserData) {
+      const mappedWallets = typeof privyUserData === 'string' ? 
+        JSON.parse(privyUserData) : privyUserData;
+      
+      if (Array.isArray(mappedWallets.wallets) && 
+          mappedWallets.wallets.includes(walletAddress.toLowerCase())) {
+        return true;
+      }
+    }
+    
+    // Default safe response is false
+    return false;
+  } catch (error) {
+    console.error('Error validating wallet ownership:', error);
+    return false;
+  }
+}
+
 // Add validation schemas
 const PixelPlacementSchema = z.object({
   x: z.number().int().min(0).max(399),
@@ -142,6 +175,90 @@ async function validateRequestBody(req: Request, schema: z.ZodSchema) {
   }
 }
 
+// Add a new function to provide better error details
+async function validatePixelPlacement(req: Request) {
+  try {
+    const contentType = req.headers.get('content-type');
+    if (!contentType?.includes('application/json')) {
+      return { valid: false, error: 'Content-Type must be application/json' };
+    }
+
+    const body = await req.json();
+    try {
+      PixelPlacementSchema.parse(body);
+      return { valid: true, body };
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return { 
+          valid: false, 
+          error: 'Invalid pixel placement data', 
+          details: error.errors,
+          body // Return the original body for debugging
+        };
+      }
+      return { valid: false, error: 'Invalid pixel placement data' };
+    }
+  } catch (error) {
+    console.error('Request validation error:', error);
+    return { valid: false, error: 'Request processing error' };
+  }
+}
+
+// New function to verify wallet signatures for high-value operations
+async function verifyWalletSignature(req: NextRequest, walletAddress: string): Promise<boolean> {
+  try {
+    // Extract and verify signature for important operations
+    const signature = req.headers.get('x-wallet-signature');
+    const timestamp = req.headers.get('x-signature-timestamp');
+    const message = req.headers.get('x-signature-message');
+    
+    // Skip for non-state-changing operations or operations that already have other verification
+    if (!signature || !timestamp || !message) {
+      return false;
+    }
+    
+    // Basic timestamp check to prevent replay attacks
+    const requestTime = parseInt(timestamp);
+    if (isNaN(requestTime) || Date.now() - requestTime > 5 * 60 * 1000) { // 5 minute window
+      console.log('🚨 Signature timestamp expired or invalid', { timestamp });
+      return false;
+    }
+    
+    // For high-security operations, verify the signature
+    // This would need to be implemented with a proper signature verification library
+    // like ethers.js. For now, we're just checking presence.
+    return true;
+  } catch (error) {
+    console.error('Error verifying wallet signature:', error);
+    return false;
+  }
+}
+
+// Add a helper function to sanitize error messages
+function sanitizeErrorResponse(error: string): string {
+  // Map of specific technical errors to user-friendly messages
+  const errorMappings: Record<string, string> = {
+    'Token expired': 'Your session has expired. Please sign in again.',
+    'Token too old': 'Your session has expired. Please sign in again.',
+    'Invalid token': 'Authentication failed. Please sign in again.',
+    'Invalid signature': 'Invalid authentication. Please reconnect your wallet.',
+    'Wallet not found': 'Account not found. Please connect your wallet.',
+    'Privy ID mismatch': 'Authentication failed. Please sign in again.',
+    'Redis connection error': 'Server temporarily unavailable. Please try again later.',
+    'Rate limit exceeded': 'Too many requests. Please try again later.',
+  };
+  
+  // Check for specific known errors and return user-friendly versions
+  for (const [technicalError, friendlyMessage] of Object.entries(errorMappings)) {
+    if (error.includes(technicalError)) {
+      return friendlyMessage;
+    }
+  }
+  
+  // For unknown errors, return a generic message
+  return 'An error occurred. Please try again.';
+}
+
 export async function middleware(req: NextRequest): Promise<NextResponse> {
   const res = NextResponse.next();
   
@@ -163,6 +280,17 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
       // Add anti-hijacking prefix to JSON
       const safeBody = typeof body === 'object' ? 
         { ...body, security_prefix: ")]}',\n" } : body;
+      
+      // Sanitize error messages to prevent information leakage
+      if (safeBody.error && typeof safeBody.error === 'string' && init?.status && init.status >= 400) {
+        const originalError = safeBody.error;
+        
+        // Only log detailed error info, don't expose it to clients
+        console.log('Detailed error:', originalError);
+        
+        // Replace with sanitized version for the response
+        safeBody.error = sanitizeErrorResponse(originalError);
+      }
       
       const response = originalJson(safeBody, init);
       
@@ -236,9 +364,16 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   // Special handling for cron routes
   if (isCronRoute) {
     const cronSecret = req.headers.get('x-cron-secret');
-    if (cronSecret !== process.env.CRON_SECRET) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const authHeader = req.headers.get('Authorization');
+    
+    // Check either our custom cron secret or the Vercel cron job Authorization header
+    const isVercelCron = authHeader === `Bearer ${process.env.CRON_SECRET}`;
+    const isManualCron = cronSecret === process.env.CRON_SECRET;
+    
+    if (!isVercelCron && !isManualCron) {
+      return NextResponse.json({ error: 'Unauthorized', details: 'Invalid cron secret' }, { status: 401 });
     }
+    
     return res;
   }
   
@@ -260,6 +395,37 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     const privyId = await validatePrivyToken(privyToken);
     if (!privyId) {
       return NextResponse.json({ error: 'Unauthorized - Invalid token' }, { status: 401 });
+    }
+    
+    // For all API requests except profile creation, validate wallet ownership
+    if (pathname !== '/api/users/check-profile') {
+      const isValidWallet = await validateWalletOwnership(privyId, walletAddress);
+      if (!isValidWallet) {
+        console.log('🚨 Wallet ownership validation failed', {
+          wallet: walletAddress,
+          privyId: privyId
+        });
+        return NextResponse.json({ error: 'Unauthorized - Invalid wallet association' }, { status: 401 });
+      }
+    }
+    
+    // For high-value operations, also verify signature
+    const isHighValueOperation = 
+      (pathname === '/api/pixels' && method === 'POST') || 
+      pathname.includes('/api/users/ban') ||
+      pathname.includes('/api/admin/');
+      
+    if (isHighValueOperation) {
+      const hasValidSignature = await verifyWalletSignature(req, walletAddress);
+      if (!hasValidSignature) {
+        // For now, log warning but don't block - this can be enabled after client updates
+        console.log('⚠️ No valid signature for high-value operation', { 
+          pathname,
+          wallet: walletAddress
+        });
+        // In the future, uncomment the following line to enforce signatures
+        // return NextResponse.json({ error: 'Unauthorized - Signature required', needs_signature: true }, { status: 401 });
+      }
     }
 
     // SPECIAL HANDLING FOR PROFILE CREATION
@@ -320,16 +486,21 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  // Add JSON validation for specific routes
+  // Update JSON validation for pixel placement
   if (pathname === '/api/pixels' && method === 'POST') {
     const reqClone = new Request(req.url, {
       method: req.method,
       headers: req.headers,
       body: req.body
     });
-    const validatedBody = await validateRequestBody(reqClone, PixelPlacementSchema);
-    if (!validatedBody) {
-      return NextResponse.json({ error: 'Invalid pixel placement data' }, { status: 400 });
+
+    const validation = await validatePixelPlacement(reqClone);
+    if (!validation.valid) {
+      return NextResponse.json({ 
+        error: validation.error, 
+        details: validation.details || undefined,
+        requestData: validation.body // Include the original data for debugging
+      }, { status: 400 });
     }
   }
 

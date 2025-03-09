@@ -22,6 +22,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Wallet authentication failed' }, { status: 401 });
     }
     
+    // Add timestamp validation for extra security against replay attacks
+    const walletVerifiedAt = parseInt(request.headers.get('x-wallet-verified-at') || '0');
+    if (walletVerifiedAt === 0 || Date.now() - walletVerifiedAt > 30000) { // 30 second max window
+      console.log('❌ Wallet verification timestamp invalid or too old', { walletVerifiedAt });
+      return NextResponse.json({ error: 'Authentication session expired' }, { status: 401 });
+    }
+    
     console.log('📝 Check Profile Headers:', { 
       walletAddress, 
       privyId: !!privyId, 
@@ -94,21 +101,55 @@ export async function POST(request: Request) {
       // Add Privy ID if available
       if (privyId) {
         parsedUserData.privy_id = privyId;
-      } else if (privyToken) {
-        // Replace extractPrivyId with validatePrivyToken
-        const verifiedPrivyId = await validatePrivyToken(privyToken);
-        if (verifiedPrivyId) {
-          parsedUserData.privy_id = verifiedPrivyId;
-        } else {
-          console.log('❌ Invalid Privy token provided during account creation');
-          return NextResponse.json({ error: 'Invalid authentication token' }, { status: 401 });
+        
+        // Create wallet mapping for security validation
+        const existingMapping = await redis.hget('privy:wallet_mappings', privyId);
+        const walletMapping = existingMapping ? 
+          (typeof existingMapping === 'string' ? JSON.parse(existingMapping) : existingMapping) 
+          : { wallets: [], updated_at: Date.now() };
+        
+        // Add wallet to mapping if not already present
+        if (!walletMapping.wallets.includes(walletAddress.toLowerCase())) {
+          walletMapping.wallets.push(walletAddress.toLowerCase());
+          walletMapping.updated_at = Date.now();
+          
+          // Store updated mapping
+          await redis.hset('privy:wallet_mappings', {
+            [privyId]: JSON.stringify(walletMapping)
+          });
+          
+          console.log('📝 Updated wallet mapping for security validation');
         }
+      } else if (privyToken) {
+        // Remove duplicate token validation - depend on middleware validation
+        console.log('❌ Expected verified privyId from middleware but not found');
+        return NextResponse.json({ error: 'Authentication error' }, { status: 401 });
       }
       
-      // Store new user data
-      await redis.hset('users', {
-        [walletAddress]: JSON.stringify(parsedUserData)
-      });
+      // Store new user data with atomic check-and-set to prevent race conditions
+      // Use watch-multi-exec pattern for optimistic locking
+      const setResult = await redis.eval(
+        `
+        local exists = redis.call('HEXISTS', KEYS[1], ARGV[1])
+        if exists == 0 then
+          redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+          return 1
+        else
+          return 0
+        end
+        `,
+        ['users'],
+        [walletAddress, JSON.stringify(parsedUserData)]
+      );
+      
+      if (setResult === 0) {
+        // Another request created the profile first, fetch the current data
+        const currentData = await redis.hget('users', walletAddress);
+        parsedUserData = currentData ? 
+          (typeof currentData === 'string' ? JSON.parse(currentData) : currentData) 
+          : parsedUserData;
+      }
+      
       console.log('📝 Created new user with $BILLBOARD balance:', onChainBalance);
     } else {
       // Update token balance with on-chain balance
@@ -124,14 +165,29 @@ export async function POST(request: Request) {
       
       if (privyId && parsedUserData.privy_id !== privyId) {
         parsedUserData.privy_id = privyId;
-      } else if (!parsedUserData.privy_id && privyToken) {
-        const verifiedPrivyId = await validatePrivyToken(privyToken);
-        if (verifiedPrivyId) {
-          parsedUserData.privy_id = verifiedPrivyId;
-        } else {
-          console.log('❌ Invalid Privy token provided during Privy ID update');
-          return NextResponse.json({ error: 'Invalid authentication token' }, { status: 401 });
+        
+        // Update wallet mapping for security validation
+        const existingMapping = await redis.hget('privy:wallet_mappings', privyId);
+        const walletMapping = existingMapping ? 
+          (typeof existingMapping === 'string' ? JSON.parse(existingMapping) : existingMapping) 
+          : { wallets: [], updated_at: Date.now() };
+        
+        // Add wallet to mapping if not already present
+        if (!walletMapping.wallets.includes(walletAddress.toLowerCase())) {
+          walletMapping.wallets.push(walletAddress.toLowerCase());
+          walletMapping.updated_at = Date.now();
+          
+          // Store updated mapping
+          await redis.hset('privy:wallet_mappings', {
+            [privyId]: JSON.stringify(walletMapping)
+          });
+          
+          console.log('📝 Updated wallet mapping for security validation');
         }
+      } else if (!parsedUserData.privy_id && privyToken) {
+        // Remove duplicate token validation - depend on middleware validation
+        console.log('❌ Expected verified privyId from middleware but not found');
+        return NextResponse.json({ error: 'Authentication error' }, { status: 401 });
       }
       
       // Save updates if needed

@@ -160,6 +160,7 @@ export default function Ticker() {
     };
 
     const initialize = async () => {
+      if (DEBUG) console.log('🚀 Ticker: Initializing...');
       try {
         const token = await getAccessToken();
         const [tickerResponse, activityResponse] = await Promise.all([
@@ -193,8 +194,9 @@ export default function Ticker() {
         console.error('Failed to load initial ticker data:', error);
       }
 
+      // Always ensure Pusher is connected
       if (!pusherManager.isConnected()) {
-        console.log('🔄 Ticker: Reconnecting Pusher');
+        console.log('🔄 Ticker: Connecting Pusher');
         pusherManager.reconnect();
       }
       
@@ -202,8 +204,10 @@ export default function Ticker() {
       setIsConnected(true);
     };
 
+    // Initialize immediately
     initialize();
 
+    // Set up a timer to check connection every 30 seconds
     const connectionCheck = setInterval(() => {
       if (!pusherManager.isConnected()) {
         console.log('🔄 Ticker: Connection lost, reconnecting...');
@@ -228,10 +232,19 @@ export default function Ticker() {
     
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
+    // Also set up a handler for when the page loads or reloads
+    const handleLoad = () => {
+      console.log('🔄 Ticker: Page loaded, initializing ticker');
+      initialize();
+    };
+
+    window.addEventListener('load', handleLoad);
+
     return () => {
       clearInterval(connectionCheck);
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('load', handleLoad);
     };
   }, [getAccessToken]);
 
