@@ -6,19 +6,26 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   try {
+    // Check if we want data for the last hour (default) or 24 hours
+    const { searchParams } = new URL(request.url);
+    const period = searchParams.get('period');
+    const is24Hour = period === '24h';
+    
     const pixels = await redis.hgetall('canvas:pixels');
     const pixelsArray = Object.values(pixels || {}).map(p => 
       typeof p === 'string' ? JSON.parse(p) : p
     );
     
     const ONE_HOUR = 60 * 60 * 1000;
+    const TWENTY_FOUR_HOURS = 24 * ONE_HOUR;
     const now = Date.now();
+    const timeFrame = is24Hour ? TWENTY_FOUR_HOURS : ONE_HOUR;
 
-    // Use same calculation as in pixel placement
+    // Use same calculation as in pixel placement but with variable timeframe
     const userCounts = pixelsArray
       .filter(pixel => {
         const placedAt = new Date(pixel.placed_at).getTime();
-        return (now - placedAt) <= ONE_HOUR;
+        return (now - placedAt) <= timeFrame;
       })
       .reduce<Record<string, any>>((acc, pixel) => {
         const { wallet_address, farcaster_username, farcaster_pfp } = pixel;

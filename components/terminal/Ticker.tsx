@@ -13,11 +13,12 @@ interface TopUser {
   farcaster_pfp: string | null;
 }
 
-// Updated activity spike interface
-interface ActivitySpike {
-  count: number;      // Number of pixels placed in that timeframe
-  timeWindow: number; // Time window in minutes
-  intensity: number;  // 1-5 scale for vibration intensity
+// We'll replace the ActivitySpike interface with a 24-hour users interface
+interface TopUser24Hours {
+  wallet_address: string;
+  count: number;  // Total number of pixels placed in last 24 hours
+  farcaster_username: string | null;
+  farcaster_pfp: string | null;
 }
 
 const DEBUG = false; // Reduce debug logging
@@ -27,7 +28,8 @@ export default function Ticker() {
   if (DEBUG) console.log('🎯 Ticker component rendering');
   
   const [users, setUsers] = useState<TopUser[]>([]);
-  const [activitySpikes, setActivitySpikes] = useState<ActivitySpike[]>([]);
+  // Replace activity spikes with 24h user data
+  const [users24h, setUsers24h] = useState<TopUser24Hours[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [contentWidth, setContentWidth] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -41,169 +43,182 @@ export default function Ticker() {
         setContentWidth(contentRef.current?.scrollWidth || 0);
       });
     }
-  }, [users, activitySpikes]);
+  }, [users, users24h]);
 
-  // Format user with memoization
-  const formatUser = useCallback((user: TopUser, index: number) => (
-    <span 
-      key={`user-${user.wallet_address}-${index}`}
-      className="ticker-item"
-    >
-      <span className="text-gray-400 mr-1">{index + 1}.</span>
-      {user.farcaster_pfp && user.farcaster_pfp !== 'null' && (
-        <span className="inline-flex items-center gap-2">
-          <FarcasterLogo className="text-purple-400" size="sm" />
-          <Image
-            src={user.farcaster_pfp}
-            alt={user.farcaster_username || user.wallet_address}
-            width={16}
-            height={16}
-            className="rounded-full"
-          />
-        </span>
-      )}
-      {user.farcaster_username && user.farcaster_username !== 'null' ? (
-        <a 
-          href={`https://warpcast.com/${user.farcaster_username}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-purple-400 hover:text-purple-300 transition-colors ml-1"
-        >
-          @{user.farcaster_username}
-        </a>
-      ) : (
-        <a 
-          href={`https://basescan.org/address/${user.wallet_address}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-blue-400 hover:text-blue-300 transition-colors"
-        >
-          {user.wallet_address.slice(0, 6)}...{user.wallet_address.slice(-4)}
-        </a>
-      )}
-      <span className="text-[#FFD700] ml-1">
-        - {user.count} {user.count === 1 ? 'pixel' : 'pixels'}
-      </span>
-    </span>
-  ), []);
-
-  // Format activity spikes with color intensity
-  const formatActivitySpike = useCallback((spike: ActivitySpike, index: number) => {
-    const intensityClass = `activity-intensity-${spike.intensity}`;
-    
-    // Color gets more red as intensity increases
-    let textColorClass;
-    if (spike.intensity <= 2) {
-      textColorClass = "text-amber-400"; // Yellow/amber for low intensity
-    } else if (spike.intensity === 3) {
-      textColorClass = "text-orange-400"; // Orange for medium intensity
-    } else if (spike.intensity === 4) {
-      textColorClass = "text-orange-600"; // Darker orange for higher intensity
-    } else {
-      textColorClass = "text-red-500"; // Red for highest intensity
-    }
-    
-    let message;
-    if (spike.intensity <= 2) {
-      message = `${spike.count} pixels in ${spike.timeWindow} ${spike.timeWindow === 1 ? 'min' : 'mins'}`;
-    } else if (spike.intensity === 3) {
-      message = `Whoa! ${spike.count} pixels in just ${spike.timeWindow} ${spike.timeWindow === 1 ? 'min' : 'mins'}!`;
-    } else if (spike.intensity === 4) {
-      message = `HOT! ${spike.count} pixels in ${spike.timeWindow} ${spike.timeWindow === 1 ? 'min' : 'mins'}!`;
-    } else {
-      message = `INSANE ACTIVITY! ${spike.count} PIXELS!`;
-    }
-    
+  // Format user with CSS classes
+  const formatUser = useCallback((user: TopUser, index: number) => {
     return (
       <span 
-        key={`spike-${index}-${spike.count}`} 
-        className={`ticker-item font-bold ${intensityClass} ${textColorClass}`}
+        key={`user-${user.wallet_address}-${index}`}
+        className="ticker-item"
       >
-        * {message} *
+        <span className="text-gray-400 mr-1">{index + 1}.</span>
+        {user.farcaster_pfp && user.farcaster_pfp !== 'null' && (
+          <span className="inline-flex items-center gap-2">
+            <FarcasterLogo className="text-purple-400" size="sm" />
+            <Image
+              src={user.farcaster_pfp}
+              alt={user.farcaster_username || user.wallet_address}
+              width={16}
+              height={16}
+              className="rounded-full"
+            />
+          </span>
+        )}
+        {user.farcaster_username && user.farcaster_username !== 'null' ? (
+          <a 
+            href={`https://warpcast.com/${user.farcaster_username}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-purple-400 hover:text-purple-300 transition-colors ml-1"
+          >
+            @{user.farcaster_username}
+          </a>
+        ) : (
+          <a 
+            href={`https://basescan.org/address/${user.wallet_address}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            {user.wallet_address.slice(0, 6)}...{user.wallet_address.slice(-4)}
+          </a>
+        )}
+        <span className="text-[#4ADE80] ml-1">
+          - {user.count} {user.count === 1 ? 'pixel' : 'pixels'}
+        </span>
+      </span>
+    );
+  }, []);
+  
+  // Format a top user for the 24-hour period
+  const formatUser24h = useCallback((user: TopUser24Hours, index: number) => {
+    return (
+      <span 
+        key={`user24h-${user.wallet_address}-${index}`}
+        className="ticker-item"
+      >
+        <span className="text-gray-400 mr-1">{index + 1}.</span>
+        {user.farcaster_pfp && user.farcaster_pfp !== 'null' && (
+          <span className="inline-flex items-center gap-2">
+            <FarcasterLogo className="text-purple-400" size="sm" />
+            <Image
+              src={user.farcaster_pfp}
+              alt={user.farcaster_username || user.wallet_address}
+              width={16}
+              height={16}
+              className="rounded-full"
+            />
+          </span>
+        )}
+        {user.farcaster_username && user.farcaster_username !== 'null' ? (
+          <a 
+            href={`https://warpcast.com/${user.farcaster_username}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-purple-400 hover:text-purple-300 transition-colors ml-1"
+          >
+            @{user.farcaster_username}
+          </a>
+        ) : (
+          <a 
+            href={`https://basescan.org/address/${user.wallet_address}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            {user.wallet_address.slice(0, 6)}...{user.wallet_address.slice(-4)}
+          </a>
+        )}
+        <span className="text-[#FFD700] ml-1">
+          - {user.count} {user.count === 1 ? 'pixel' : 'pixels'}
+        </span>
       </span>
     );
   }, []);
 
+  const handlePixelPlaced = (data: { topUsers: TopUser[], topUsers24h?: TopUser24Hours[] }) => {
+    if (DEBUG) console.log('📊 Received pixel-placed event:', data);
+    
+    if (Array.isArray(data.topUsers) && data.topUsers.length > 0) {
+      setUsers(prevUsers => {
+        if (!prevUsers || prevUsers.length === 0) return data.topUsers;
+        
+        return data.topUsers.map(newUser => {
+          const prevUser = prevUsers.find(p => p.wallet_address === newUser.wallet_address);
+          
+          if (newUser.farcaster_username || newUser.farcaster_pfp) {
+            return newUser;
+          }
+          
+          if (prevUser && (prevUser.farcaster_username || prevUser.farcaster_pfp)) {
+            return {
+              ...newUser,
+              farcaster_username: prevUser.farcaster_username,
+              farcaster_pfp: prevUser.farcaster_pfp
+            };
+          }
+          
+          return newUser;
+        });
+      });
+    }
+    
+    // Update 24h users if provided
+    if (data.topUsers24h && Array.isArray(data.topUsers24h) && data.topUsers24h.length > 0) {
+      setUsers24h(data.topUsers24h);
+      if (DEBUG) console.log('📊 24-hour users updated:', data.topUsers24h);
+    }
+  };
+
+  const initialize = async () => {
+    if (DEBUG) console.log('🚀 Ticker: Initializing...');
+    try {
+      const token = await getAccessToken();
+      const [tickerResponse, users24hResponse] = await Promise.all([
+        fetch('/api/ticker', {
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'x-privy-token': token || ''
+          }
+        }),
+        fetch('/api/ticker?period=24h', {
+          headers: {
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'x-privy-token': token || ''
+          }
+        })
+      ]);
+      
+      const tickerData = await tickerResponse.json();
+      if (Array.isArray(tickerData) && tickerData.length > 0) {
+        setUsers(tickerData);
+        if (DEBUG) console.log('📊 Initial user data loaded:', tickerData);
+      }
+      
+      const users24hData = await users24hResponse.json();
+      if (Array.isArray(users24hData) && users24hData.length > 0) {
+        setUsers24h(users24hData);
+        if (DEBUG) console.log('📊 Initial 24h user data loaded:', users24hData);
+      }
+    } catch (error) {
+      console.error('Failed to load initial ticker data:', error);
+    }
+
+    // Always ensure Pusher is connected
+    if (!pusherManager.isConnected()) {
+      console.log('🔄 Ticker: Connecting Pusher');
+      pusherManager.reconnect();
+    }
+    
+    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
+    setIsConnected(true);
+  };
+
   // Fetch data and handle updates
   useEffect(() => {
-    const handlePixelPlaced = (data: { topUsers: TopUser[], activitySpikes?: ActivitySpike[] }) => {
-      if (DEBUG) console.log('📊 Received pixel-placed event:', data);
-      
-      if (Array.isArray(data.topUsers) && data.topUsers.length > 0) {
-        setUsers(prevUsers => {
-          if (!prevUsers || prevUsers.length === 0) return data.topUsers;
-          
-          return data.topUsers.map(newUser => {
-            const prevUser = prevUsers.find(p => p.wallet_address === newUser.wallet_address);
-            
-            if (newUser.farcaster_username || newUser.farcaster_pfp) {
-              return newUser;
-            }
-            
-            if (prevUser && (prevUser.farcaster_username || prevUser.farcaster_pfp)) {
-              return {
-                ...newUser,
-                farcaster_username: prevUser.farcaster_username,
-                farcaster_pfp: prevUser.farcaster_pfp
-              };
-            }
-            
-            return newUser;
-          });
-        });
-      }
-      
-      if (data.activitySpikes !== undefined) {
-        setActivitySpikes(data.activitySpikes);
-        if (DEBUG) console.log('📈 Activity spikes updated:', data.activitySpikes);
-      }
-    };
-
-    const initialize = async () => {
-      if (DEBUG) console.log('🚀 Ticker: Initializing...');
-      try {
-        const token = await getAccessToken();
-        const [tickerResponse, activityResponse] = await Promise.all([
-          fetch('/api/ticker', {
-            headers: {
-              'Cache-Control': 'no-cache',
-              'Pragma': 'no-cache',
-              'x-privy-token': token || ''
-            }
-          }),
-          fetch('/api/pixels/activity', {
-            headers: {
-              'Cache-Control': 'no-cache',
-              'Pragma': 'no-cache'
-            }
-          })
-        ]);
-        
-        const tickerData = await tickerResponse.json();
-        if (Array.isArray(tickerData) && tickerData.length > 0) {
-          setUsers(tickerData);
-          if (DEBUG) console.log('📊 Initial user data loaded:', tickerData);
-        }
-        
-        const activityData = await activityResponse.json();
-        if (Array.isArray(activityData) && activityData.length > 0) {
-          setActivitySpikes(activityData);
-          if (DEBUG) console.log('📈 Initial activity data loaded:', activityData);
-        }
-      } catch (error) {
-        console.error('Failed to load initial ticker data:', error);
-      }
-
-      // Always ensure Pusher is connected
-      if (!pusherManager.isConnected()) {
-        console.log('🔄 Ticker: Connecting Pusher');
-        pusherManager.reconnect();
-      }
-      
-      pusherManager.subscribe('pixel-placed', handlePixelPlaced);
-      setIsConnected(true);
-    };
-
     // Initialize immediately
     initialize();
 
@@ -237,7 +252,15 @@ export default function Ticker() {
       console.log('🔄 Ticker: Page loaded, initializing ticker');
       initialize();
     };
-
+    
+    // Add periodic refresh to keep ticker data current
+    const refreshInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        console.log('🔄 Ticker: Periodic refresh');
+        initialize();
+      }
+    }, 60000); // Refresh every 60 seconds
+    
     window.addEventListener('load', handleLoad);
 
     return () => {
@@ -245,31 +268,41 @@ export default function Ticker() {
       pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('load', handleLoad);
+      clearInterval(refreshInterval); // Clean up the interval
     };
   }, [getAccessToken]);
 
-  // Auto-expire activity spikes after 5 minutes
+  // Auto-expire 24h user data after inactivity to refresh from API
   useEffect(() => {
-    if (activitySpikes.length === 0) return;
+    if (users24h.length === 0) return;
     
     const timeout = setTimeout(() => {
-      if (DEBUG) console.log('⏱️ Auto-expiring activity spikes');
-      setActivitySpikes([]);
-    }, 5 * 60 * 1000);
+      if (DEBUG) console.log('⏱️ Auto-refreshing 24h data');
+      initialize();
+    }, 30 * 60 * 1000); // Refresh every 30 minutes
     
     return () => clearTimeout(timeout);
-  }, [activitySpikes]);
+  }, [users24h]);
 
+  // Debug code to check what data we're receiving
+  useEffect(() => {
+    console.log('Current 1h users data:', users);
+  }, [users]);
+  
+  useEffect(() => {
+    console.log('Current 24h users data:', users24h);
+  }, [users24h]);
+  
   // Update users with a smooth transition
   useEffect(() => {
-    if (users.length > 0) {
+    if (users.length > 0 || users24h.length > 0) {
       setIsUpdating(true);
       const timer = setTimeout(() => {
         setIsUpdating(false);
       }, 300); // Short delay to allow CSS transition to complete
       return () => clearTimeout(timer);
     }
-  }, [users]);
+  }, [users, users24h]);
 
   // Update the ticker styles with transitions
   const tickerStyle = {
@@ -278,45 +311,58 @@ export default function Ticker() {
   };
 
   // If we have no data at all, don't render
-  if (!users || users.length === 0) {
+  if ((!users || users.length === 0) && (!users24h || users24h.length === 0)) {
     return null;
   }
 
   return (
     <div className="w-full overflow-hidden text-xs ticker-wrapper">
-      <div className="ticker-track" style={tickerStyle}>
-        {/* Repeating content */}
-        {[1, 2, 3].map((_, idx) => (
-          <div key={idx} className="ticker-content">
-            {/* Diamond */}
-            <span className="ticker-diamond">◆</span>
-            
-            {/* Activity spike section */}
-            {activitySpikes && activitySpikes.length > 0 && (
-              <>
-                <span className="ticker-header">* ACTIVITY SPIKE *</span>
-                {activitySpikes.map((spike, index) => formatActivitySpike(spike, index))}
-                <span className="ticker-diamond">◆</span>
-              </>
-            )}
-            
-            {/* Users section */}
-            {users && users.length > 0 && (
-              <>
-                <span className="ticker-header">TOP 10 USERS - LAST HOUR</span>
-                {users.map((user, index) => (
-                  <React.Fragment key={`user-fragment-${index}`}>
-                    {formatUser(user, index)}
-                    {index < users.length - 1 && (
-                      <span className="ticker-dot">•</span>
-                    )}
-                  </React.Fragment>
-                ))}
-                
-              </>
-            )}
-          </div>
-        ))}
+      <div className="ticker-container">
+        <div className="ticker-track" style={tickerStyle}>
+          {/* Duplicate the content multiple times to ensure continuous flow */}
+          {[0, 1, 2].map((idx) => (
+            <div key={`content-${idx}`} className="ticker-content">
+              {/* Diamond */}
+              <span className="ticker-diamond">◆</span>
+              
+              {/* 24h users section */}
+              {users24h && users24h.length > 0 && (
+                <>
+                  <span className="ticker-header ticker-header-24h">TOP USERS - LAST 24 HOURS</span>
+                  {users24h.map((user, index) => (
+                    <React.Fragment key={`user24h-fragment-${index}`}>
+                      {formatUser24h(user, index)}
+                      {index < users24h.length - 1 && (
+                        <span className="ticker-dot">•</span>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </>
+              )}
+              
+              {/* Middle diamond - ensures equal spacing between sections */}
+              <span className="ticker-diamond">◆</span>
+              
+              {/* 1h users section */}
+              {users && users.length > 0 && (
+                <>
+                  <span className="ticker-header ticker-header-1h">TOP USERS - LAST HOUR</span>
+                  {users.map((user, index) => (
+                    <React.Fragment key={`user-fragment-${index}`}>
+                      {formatUser(user, index)}
+                      {index < users.length - 1 && (
+                        <span className="ticker-dot">•</span>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </>
+              )}
+              
+              {/* Ending diamond - makes spacing consistent */}
+              <span className="ticker-diamond">◆</span>
+            </div>
+          ))}
+        </div>
       </div>
       
       <style jsx>{`
@@ -326,48 +372,58 @@ export default function Ticker() {
           display: flex;
           align-items: center;
           background-color: #111827;
+          overflow: hidden;
+        }
+        
+        .ticker-container {
+          position: relative;
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
         }
         
         .ticker-track {
           display: flex;
           white-space: nowrap;
-          will-change: transform;
-          animation: ticker 20s linear infinite;
-          transform: translateZ(0);
-          backface-visibility: hidden;
+          animation: ticker 18s linear infinite;
         }
         
         .ticker-content {
           display: inline-flex;
           align-items: center;
           flex-shrink: 0;
-          padding-right: 100px;
         }
         
         .ticker-diamond {
           color: white;
-          margin: 0 16px;
-          flex-shrink: 0;
-        }
-        
-        .ticker-header {
-          color: white;
-          font-weight: bold;
-          margin-right: 16px;
-          flex-shrink: 0;
+          margin: 0 24px; /* Increased consistent margin */
+          display: inline-block;
         }
         
         .ticker-dot {
-          color: #4b5563;
-          margin: 0 6px;
-          flex-shrink: 0;
+          color: #666;
+          margin: 0 8px;
+          display: inline-block;
         }
         
-        :global(.ticker-item) {
+        .ticker-header {
+          font-weight: bold;
+          margin-right: 16px;
+          display: inline-block;
+        }
+        
+        .ticker-header-24h {
+          color: #FFD700; /* Gold color for 24h header */
+        }
+        
+        .ticker-header-1h {
+          color: #4ADE80; /* Green color for 1h header */
+        }
+        
+        .ticker-item {
           display: inline-flex;
           align-items: center;
-          margin: 0 8px;
-          flex-shrink: 0;
+          margin-right: 12px;
         }
         
         @keyframes ticker {
@@ -375,19 +431,25 @@ export default function Ticker() {
             transform: translateX(0);
           }
           100% {
-            transform: translateX(-33.33%);
+            transform: translateX(-33.333%); /* Move exactly one full repetition */
+          }
+        }
+        
+        @media (min-width: 768px) {
+          .ticker-track {
+            animation-duration: 20s;
           }
         }
         
         @media (min-width: 1024px) {
           .ticker-track {
-            animation-duration: 24s;
+            animation-duration: 22s;
           }
         }
         
         @media (min-width: 1536px) {
           .ticker-track {
-            animation-duration: 28s;
+            animation-duration: 25s;
           }
         }
       `}</style>

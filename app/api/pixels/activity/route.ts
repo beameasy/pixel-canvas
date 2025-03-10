@@ -41,7 +41,7 @@ export async function GET() {
       // Only include windows that exceed the threshold
       if (count >= window.threshold) {
         return {
-          count: window.threshold,
+          count: count,
           timeWindow: window.minutes,
           intensity: window.intensity
         };
@@ -57,9 +57,21 @@ export async function GET() {
     // Only return the most significant spike
     const significantSpikes = nonNullSpikes.length > 0 ? [nonNullSpikes[0]] : [];
     
-    return NextResponse.json(significantSpikes);
+    return NextResponse.json(significantSpikes, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
+    });
   } catch (error) {
     console.error('Error fetching activity data:', error);
-    return NextResponse.json([]);
+    return NextResponse.json([], {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
+        'Pragma': 'no-cache',
+        'Expires': '0'
+      }
+    });
   }
 } 
