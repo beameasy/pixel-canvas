@@ -133,12 +133,15 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     }
   });
 
+  // Update the state type to allow null for previewPixel and include all needed properties
   const [interactionState, setInteractionState] = useState({
     isDragging: false,
     dragStart: { x: 0, y: 0 },
     dragStartPos: { x: 0, y: 0 },
-    previewPixel: { x: -1, y: -1 },
-    pinchZooming: false
+    previewPixel: null as { x: number, y: number } | null,
+    pinchZooming: false,
+    currentScale: 1,
+    lastPinchDistance: 0
   });
 
 
@@ -204,6 +207,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   const [isSmallScreen, setIsSmallScreen] = useState(false);
 
+  // Make sure we have the required state variables for pinch zoom
   const [pinchStart, setPinchStart] = useState(0);
   const [pinchScale, setPinchScale] = useState(1);
 
@@ -650,7 +654,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Also clear in interaction state
     setInteractionState(prev => ({
       ...prev,
-      previewPixel: { x: -1, y: -1 }
+      previewPixel: null
     }));
     
     setCanvasState(prev => ({
@@ -683,15 +687,35 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Scale for retina displays
     tempCtx.scale(dpr, dpr);
 
-    // Copy the exact visible portion of the canvas
-    tempCtx.drawImage(
-      canvas,
-      0, 0, rect.width * dpr, rect.height * dpr,  // Source dimensions
-      0, 0, rect.width, rect.height               // Destination dimensions
-    );
+    // Instead of copying the current canvas (which includes grid lines),
+    // manually render the canvas content without grid lines
+    
+    // 1. Fill with white background
+    tempCtx.fillStyle = '#FFFFFF';
+    tempCtx.fillRect(0, 0, rect.width, rect.height);
+    
+    // 2. Draw all pixels (similar to the rendering logic in the main component)
+    tempCtx.save();
+    
+    // Apply the same transformation as the main canvas
+    tempCtx.translate(canvasState.view.x, canvasState.view.y);
+    tempCtx.scale(canvasState.view.scale, canvasState.view.scale);
+    
+    // Draw the pixels (no grid lines)
+    canvasState.pixels.forEach((pixel) => {
+      tempCtx.fillStyle = pixel.color;
+      tempCtx.fillRect(
+        pixel.x * PIXEL_SIZE,
+        pixel.y * PIXEL_SIZE,
+        PIXEL_SIZE,
+        PIXEL_SIZE
+      );
+    });
+    
+    tempCtx.restore();
 
     return tempCanvas.toDataURL('image/png');
-  }, []);
+  }, [canvasState.pixels, canvasState.view]);
 
   // Update useImperativeHandle to expose the shareCanvas method
   useImperativeHandle(ref, () => ({
@@ -737,7 +761,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Clear preview pixel when starting drag
     setInteractionState(prev => ({
       ...prev,
-      previewPixel: { x: -1, y: -1 }
+      previewPixel: null
     }));
     const canvas = overlayCanvasRef.current;
     const ctx = canvas?.getContext('2d');
@@ -752,7 +776,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         isDragging: true,
         dragStart: { x: e.clientX, y: e.clientY },
         dragStartPos: { x: canvasState.view.x, y: canvasState.view.y },
-        previewPixel: { x: -1, y: -1 } // Ensure preview pixel is cleared for drag operations
+        previewPixel: null // Ensure preview pixel is cleared for drag operations
       }));
       return;
     }
@@ -776,7 +800,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       isDragging: true,
       dragStart: { x: e.clientX, y: e.clientY },
       dragStartPos: { x: canvasState.view.x, y: canvasState.view.y },
-      previewPixel: { x: -1, y: -1 } // Ensure preview pixel is cleared
+      previewPixel: null // Ensure preview pixel is cleared
     }));
   };
 
@@ -859,10 +883,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       onMousePosChange(null);
       
       // Also ensure the previewPixel is cleared in the state
-      if (interactionState.previewPixel.x !== -1 || interactionState.previewPixel.y !== -1) {
+      if (interactionState.previewPixel) {
         setInteractionState(prev => ({
           ...prev,
-          previewPixel: { x: -1, y: -1 }
+          previewPixel: null
         }));
       }
     }
@@ -929,6 +953,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Only place pixel if it's a left click, hasn't moved much, and we have a valid click start
     if (e.button === 0 && !hasMoved && interactionState.previewPixel && address) {
       const { x, y } = interactionState.previewPixel;
+      
       try {
         await handlePlacePixel(x, y, selectedColor);
       } catch (error) {
@@ -1157,6 +1182,21 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Modify the handlePlacePixel function to use getCurrentTier instead of directly using getClientTier
   const handlePlacePixel = async (x: number, y: number, color: string) => {
+    // The validation is still important for inputs coming from other sources
+    const GRID_SIZE = 400; // Should match server GRID_SIZE
+    
+    // Special case for -1,-1 coordinates which happen during normal UI interactions
+    // Silently return without any error notification
+    if (x === -1 && y === -1) {
+      return;
+    }
+    
+    if (x < 0 || y < 0 || x >= GRID_SIZE || y >= GRID_SIZE) {
+      // Silently return without showing error to user
+      logger.log(`Ignoring placement attempt at invalid coordinates (${x}, ${y})`);
+      return;
+    }
+    
     if (!authenticated) {
       onAuthError();
       clearPreviewPixel();
@@ -1228,7 +1268,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         dragStartPos: { x: canvasState.view.x, y: canvasState.view.y },
         previewPixel: touchMode === 'place' && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE
           ? { x, y }
-          : { x: -1, y: -1 } // Clear preview for panning in view mode
+          : null // Clear preview for panning in view mode
       }));
 
       // In place mode, also set up for potential pixel placement if coordinates are valid
@@ -1241,7 +1281,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         // Ensure invalid coordinates don't get stored
         setInteractionState(prev => ({
           ...prev,
-          previewPixel: { x: -1, y: -1 }
+          previewPixel: null
         }));
       }
     }
@@ -1269,7 +1309,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         // Also clear in interaction state
         setInteractionState(prev => ({
           ...prev,
-          previewPixel: { x: -1, y: -1 }
+          previewPixel: null
         }));
         
         const midX = (touch1.clientX + touch2.clientX) / 2 - rect.left;
@@ -1300,7 +1340,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         // Clear preview pixel
         setInteractionState(prev => ({
           ...prev,
-          previewPixel: { x: -1, y: -1 }
+          previewPixel: null
         }));
         
         // Also clear visual preview
@@ -1311,7 +1351,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       else if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
         setInteractionState(prev => ({
           ...prev,
-          previewPixel: { x: -1, y: -1 }
+          previewPixel: null
         }));
         
         // Also clear visual preview
@@ -1338,10 +1378,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // 2. We're ending a single touch (not a pinch)
     // 3. We're in place mode (important check that was missing)
     if (
-      interactionState.previewPixel.x >= 0 && 
-      interactionState.previewPixel.x < GRID_SIZE &&
-      interactionState.previewPixel.y >= 0 && 
-      interactionState.previewPixel.y < GRID_SIZE &&
+      interactionState.previewPixel && 
       e.touches.length === 0 && 
       e.changedTouches.length === 1 &&
       touchMode === 'place'
@@ -1358,7 +1395,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     setInteractionState(prev => ({
       ...prev,
       isDragging: false,
-      previewPixel: { x: -1, y: -1 },
+      previewPixel: null,
       pinchZooming: false
     }));
     setPinchStart(0);
@@ -1434,7 +1471,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Clear the preview pixel in interaction state
     setInteractionState(prev => ({
       ...prev,
-      previewPixel: { x: -1, y: -1 }
+      previewPixel: null
     }));
 
     setCanvasState(prev => {
@@ -1503,7 +1540,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       canvas.removeEventListener('touchmove', handleTouchMove);
       canvas.removeEventListener('touchend', handleTouchEnd);
     };
-  }, [canvasState.view.scale]);
+  }, [handleTouchStart, handleTouchMove, handleTouchEnd]);
 
   const toggleTouchMode = () => {
     onTouchModeChange(touchMode === 'view' ? 'place' : 'view');
@@ -1511,6 +1548,13 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
 
   // Add these handlers for React touch events on the canvas element
   const handleReactTouchStart = (e: React.TouchEvent) => {
+    // Don't preventDefault here, let the native handler do it
+    
+    // For multi-touch gestures, defer to the native handler for pinch zooming
+    if (e.touches.length > 1) {
+      return;
+    }
+    
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
 
@@ -1518,9 +1562,12 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     const x = Math.floor((touch.clientX - rect.left - canvasState.view.x) / (PIXEL_SIZE * canvasState.view.scale));
     const y = Math.floor((touch.clientY - rect.top - canvasState.view.y) / (PIXEL_SIZE * canvasState.view.scale));
 
-    if (touchMode === 'place' && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE && address) {
+    // Use the same validation pattern for consistency
+    const validCoordinates = x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE;
+    
+    if (touchMode === 'place' && validCoordinates && address) {
       handlePlacePixel(x, y, selectedColor);
-    } else if (touchMode === 'view' && x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE) {
+    } else if (touchMode === 'view' && validCoordinates) {
       // Show tooltip without timeout - will persist until next touch
       const key = `${x},${y}`;
       const pixelData = canvasState.pixels.get(key);
@@ -1538,48 +1585,36 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
         setHoverData(null);
       }
     }
-
-    // Handle panning
-    setInteractionState(prev => ({
-      ...prev,
-      isDragging: false,
-      dragStart: {
-        x: touch.clientX,
-        y: touch.clientY
-      },
-      dragStartPos: { x: canvasState.view.x, y: canvasState.view.y }
-    }));
   };
 
   const handleReactTouchMove = (e: React.TouchEvent) => {
+    // For multi-touch gestures, defer to the native handler for pinch zooming
+    if (e.touches.length > 1) {
+      return;
+    }
+    
     // Clear tooltip when moving
     setHoverData(null);
-    
-    // ... rest of touch move handler
   };
 
   const handleReactTouchEnd = (e: React.TouchEvent) => {
+    // For multi-touch gestures, defer to the native handler
+    if (e.touches.length > 0 || e.changedTouches.length > 1) {
+      return;
+    }
+    
     // Clear tooltip when touch ends
     setHoverData(null);
     
     // Check if user tried to place a pixel but is not authenticated
     if (
       touchMode === 'place' && 
-      interactionState.previewPixel.x >= 0 && 
-      interactionState.previewPixel.x < GRID_SIZE &&
-      interactionState.previewPixel.y >= 0 && 
-      interactionState.previewPixel.y < GRID_SIZE &&
-      !interactionState.isDragging &&
+      interactionState.previewPixel && 
       !authenticated
     ) {
       onAuthError();
       clearPreviewPixel();
     }
-    
-    setInteractionState(prev => ({
-      ...prev,
-      isDragging: false
-    }));
   };
 
   // Add useEffect to monitor canvasRef
@@ -1636,7 +1671,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     });
 
     // Draw preview pixel if valid position
-    if (interactionState.previewPixel.x !== -1 && interactionState.previewPixel.y !== -1 && !interactionState.isDragging) {
+    if (interactionState.previewPixel) {
       const screenX = interactionState.previewPixel.x * PIXEL_SIZE * canvasState.view.scale + canvasState.view.x;
       const screenY = interactionState.previewPixel.y * PIXEL_SIZE * canvasState.view.scale + canvasState.view.y;
       
@@ -1825,9 +1860,9 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   const clearPreviewPixel = useCallback(() => {
     setInteractionState(prev => ({
       ...prev,
-      previewPixel: { x: -1, y: -1 }
+      previewPixel: null
     }));
-    drawPreviewPixel(-1, -1);
+    drawPreviewPixel(-1, -1); // Keep the drawing function as is for now
   }, [drawPreviewPixel]);
 
   // Update handlePixelPlacement to use clearPreviewPixel
@@ -2117,7 +2152,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       // Clear any preview pixels
       setInteractionState(prev => ({
         ...prev,
-        previewPixel: { x: -1, y: -1 }
+        previewPixel: null
       }));
       setHoverData(null);
       
@@ -2199,7 +2234,7 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
   useEffect(() => {
     setInteractionState(prev => ({
       ...prev,
-      previewPixel: { x: -1, y: -1 }
+      previewPixel: null
     }));
   }, [selectedColor]);
 
@@ -2723,6 +2758,10 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       document.removeEventListener('visibilitychange', visibilityHandler);
     };
   }, []);
+
+  useEffect(() => {
+    needsRender.current = true;
+  }, [canvasState.view, interactionState.pinchZooming]);
 
   return (
     <div 

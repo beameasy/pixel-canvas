@@ -14,6 +14,9 @@ class PusherManager {
   private lastEventTime = 0;
   private healthCheckInterval: any = null;
   private disconnectTimeout: any = null;
+  private lastReconnectTime = 0;  // Track when we last attempted reconnection
+  private eventBuffer: Map<string, any> = new Map();  // Store latest events
+  private connectionCount = 0;  // Track how many components need a connection
 
   private constructor() {
     this.initializeChannel();
@@ -130,12 +133,15 @@ class PusherManager {
     
     this.eventHandlers.forEach((handlers, eventName) => {
       this.log(`🔁 PusherManager: Rebinding ${handlers.size} handlers for event '${eventName}'`);
-      handlers.forEach(handler => {
-        this.channel.bind(eventName, (data: any) => {
-          // Update last event time whenever we receive any event
-          this.lastEventTime = Date.now();
-          handler(data);
-        });
+      this.channel.bind(eventName, (data: any) => {
+        // Update last event time whenever we receive any event
+        this.lastEventTime = Date.now();
+        
+        // Store this event for future subscribers
+        this.eventBuffer.set(eventName, data);
+        
+        // Notify all handlers
+        handlers.forEach(handler => handler(data));
       });
     });
   }
@@ -154,6 +160,12 @@ class PusherManager {
         this.lastEventTime = Date.now();
         callback(data);
       });
+      
+      // Immediately send cached event if available
+      const cachedEvent = this.eventBuffer.get(eventName);
+      if (cachedEvent) {
+        setTimeout(() => callback(cachedEvent), 0);
+      }
     } else {
       this.log(`⚠️ PusherManager: Channel not subscribed yet, event '${eventName}' will be bound later`);
       // If we're not subscribed yet, make sure we're connected
@@ -178,6 +190,15 @@ class PusherManager {
   }
 
   reconnect() {
+    // Throttle reconnect attempts - don't try more than once every 5 seconds
+    const now = Date.now();
+    if (now - this.lastReconnectTime < 5000) {
+      this.log('🛑 PusherManager: Throttling reconnect attempt, too soon');
+      return;
+    }
+    
+    this.lastReconnectTime = now;
+    
     if (this.isReconnecting) {
       this.log('🔄 PusherManager: Already reconnecting, skipping duplicate attempt');
       return;
@@ -221,15 +242,22 @@ class PusherManager {
       isSubscribed: !!this.channel?.subscribed,
       connectionState: pusherClient.connection.state,
       timeSinceLastEvent: Date.now() - this.lastEventTime,
-      reconnectAttempts: this.reconnectAttempts
+      reconnectAttempts: this.reconnectAttempts,
+      connectionCount: this.connectionCount
     };
     
     this.log('🔍 PusherManager: Connection health check', connectionStatus);
     
-    // Check if we're stale - no events for 5 minutes
-    const isConnectionStale = this.lastEventTime > 0 && (Date.now() - this.lastEventTime > 5 * 60 * 1000);
+    // Only check if we have components that need connectivity
+    if (this.connectionCount === 0) {
+      this.log('🔌 PusherManager: No active components, skipping health check');
+      return;
+    }
     
-    if (forceReconnect || !this.isConnected() || isConnectionStale) {
+    // Check if we're stale - increase to 10 minutes
+    const isConnectionStale = this.lastEventTime > 0 && (Date.now() - this.lastEventTime > 10 * 60 * 1000);
+    
+    if (forceReconnect || (!this.isConnected() && this.connectionCount > 0) || isConnectionStale) {
       if (this.isReconnecting) {
         this.log('🔄 PusherManager: Already reconnecting during health check');
         return;
@@ -238,7 +266,8 @@ class PusherManager {
       this.log('🔄 PusherManager: Connection health check failed, reconnecting', {
         forceReconnect,
         isConnected: this.isConnected(),
-        isConnectionStale
+        isConnectionStale,
+        connectionCount: this.connectionCount
       });
       
       this.reconnect();
@@ -272,6 +301,42 @@ class PusherManager {
     }
     
     pusherClient.disconnect();
+  }
+
+  // Modified method to register a component that needs a connection
+  addConnection() {
+    this.connectionCount++;
+    this.log(`➕ PusherManager: Component added connection, count: ${this.connectionCount}`);
+    
+    // Ensure we're connected if at least one component needs it
+    if (this.connectionCount === 1 && !this.isConnected()) {
+      this.reconnect();
+    }
+    
+    return this.connectionCount;
+  }
+  
+  // Method to unregister a component
+  removeConnection() {
+    this.connectionCount = Math.max(0, this.connectionCount - 1);
+    this.log(`➖ PusherManager: Component removed connection, count: ${this.connectionCount}`);
+    
+    // Consider disconnecting if no components need the connection
+    // We'll keep the connection for up to 60 seconds after last component disconnects
+    if (this.connectionCount === 0) {
+      if (this.disconnectTimeout) {
+        clearTimeout(this.disconnectTimeout);
+      }
+      
+      this.disconnectTimeout = setTimeout(() => {
+        if (this.connectionCount === 0) {
+          this.log('🔌 PusherManager: No active components, disconnecting');
+          pusherClient.disconnect();
+        }
+      }, 60000); // Keep connection for 60 seconds
+    }
+    
+    return this.connectionCount;
   }
 }
 
