@@ -56,12 +56,19 @@ html, body {
   will-change: transform;
 }
 
-/* Add styles for navigation positioning */
+/* Adjust ticker height and spacing */
+.ticker-content {
+  height: 24px; /* 6 rem */
+  line-height: 24px;
+  padding: 0;
+}
+
+/* Adjust navigation spacing */
 .navigation-controls {
   position: fixed;
-  top: 2.5rem; /* Move down to account for ticker height */
+  top: 1.5rem; /* Reduced from 2.5rem */
   left: 1rem;
-  z-index: 30; /* Below ticker's z-40 */
+  z-index: 30;
 }
 
 .canvas-container {

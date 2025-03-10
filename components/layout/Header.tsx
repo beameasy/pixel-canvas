@@ -14,6 +14,8 @@ interface HeaderProps {
 export default function Header({ authenticated, onLogin, onLogout, userAddress }: HeaderProps) {
   const [showDisconnect, setShowDisconnect] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showCopied, setShowCopied] = useState(false);
 
   const handleLogin = async () => {
     try {
@@ -27,31 +29,90 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
   };
 
   return (
-    <header className="sticky top-0 z-40">
-      <Ticker />
-      <div className="mt-8 w-full max-w-[1200px] mx-auto flex flex-col sm:flex-row justify-between items-center px-3 sm:px-4 py-2 gap-2 sm:gap-0">
-        <nav className="flex items-center gap-4 sm:gap-6 text-xs sm:text-sm overflow-x-auto w-full sm:w-auto">
-          <Link 
-            href="/" 
-            className="text-[#FFD700] hover:text-[#FFC700] font-mono whitespace-nowrap transition-colors"
+    <header className="static bg-slate-800/95 backdrop-blur-sm border-b border-slate-700 relative z-[100]">
+      <div className="fixed top-0 left-0 right-0 z-[101]">
+        <Ticker />
+      </div>
+      <div className="w-full max-w-[1200px] mx-auto flex items-center justify-between px-4 py-4 pt-8">
+        <div className="flex items-center">
+          {/* Hamburger Menu Button */}
+          <button 
+            onClick={() => setIsMenuOpen(!isMenuOpen)}
+            className="md:hidden text-[#FFD700] p-2 relative z-[101]"
           >
-            Canvas
-          </Link>
-          <Link 
-            href="/logs" 
-            className="text-[#FFD700] hover:text-[#FFC700] font-mono whitespace-nowrap transition-colors"
-          >
-            Logs
-          </Link>
-          <Link 
-            href="/leaderboard" 
-            className="text-[#FFD700] hover:text-[#FFC700] font-mono whitespace-nowrap transition-colors"
-          >
-            Leaderboard
-          </Link>
-        </nav>
-        {/* Wallet connection */}
-        <div className="w-full sm:w-auto flex justify-center sm:justify-end">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              {isMenuOpen ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              )}
+            </svg>
+          </button>
+
+          {/* Desktop Navigation */}
+          <nav className="hidden md:flex items-center space-x-6 ml-6">
+            <Link href="/" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Canvas</Link>
+            <Link href="/logs" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Logs</Link>
+            <Link href="/leaderboard" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Leaderboard</Link>
+            <Link href="/about" className="text-[#FFD700] hover:text-[#FFC700] font-mono">About</Link>
+            <Link href="/socials" className="text-[#FFD700] hover:text-[#FFC700] font-mono">Socials</Link>
+            <a 
+              href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono flex items-center gap-1"
+            >
+              Discussion
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
+            
+            {/* Token Dropdown */}
+            <div 
+              className="relative group"
+            >
+              <button className="text-[#FFD700] hover:text-[#FFC700] font-mono py-2">
+                $BILLBOARD
+              </button>
+              
+              {/* Invisible bridge to maintain hover */}
+              <div className="absolute w-full h-2 bottom-0 translate-y-full" />
+              
+              <div className="hidden group-hover:block absolute left-0 top-full pt-2 w-60 z-[102]">
+                <div className="bg-slate-800 border border-slate-700 rounded-md shadow-lg py-2">
+                  <div 
+                    className="block px-4 py-2 text-sm font-mono text-blue-400 hover:bg-slate-700 flex items-center justify-between cursor-pointer relative"
+                    onClick={() => {
+                      navigator.clipboard.writeText('0x0aB96f7A85f8480c0220296C3332488ce38D9818');
+                      setShowCopied(true);
+                      setTimeout(() => setShowCopied(false), 2000);
+                    }}
+                  >
+                    <span className="text-sm">{showCopied ? 'Copied!' : 'Contract Address'}</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </div>
+                  <a 
+                    href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block px-4 py-2 text-sm font-mono text-emerald-400 hover:bg-slate-700 flex items-center justify-between"
+                  >
+                    <span>Trade $BILLBOARD on Clank.fun</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                    </svg>
+                  </a>
+                </div>
+              </div>
+            </div>
+          </nav>
+        </div>
+
+        {/* Wallet Connection */}
+        <div className="flex items-center relative z-[101]">
           {!authenticated ? (
             <button
               onClick={handleLogin}
@@ -78,6 +139,72 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
           )}
         </div>
       </div>
+
+      {/* Mobile Navigation Menu */}
+      {isMenuOpen && (
+        <div className="fixed top-[72px] left-0 right-0 bg-slate-800 border-t border-slate-700 md:hidden z-[99]">
+          <nav className="flex flex-col p-4 space-y-4">
+            <Link 
+              href="/" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Canvas
+            </Link>
+            <Link 
+              href="/logs" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Logs
+            </Link>
+            <Link 
+              href="/leaderboard" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Leaderboard
+            </Link>
+            <Link 
+              href="/about" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              About
+            </Link>
+            <Link 
+              href="/socials" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Socials
+            </Link>
+            <a 
+              href="https://clank.fun/t/0x0ab96f7a85f8480c0220296c3332488ce38d9818" 
+              target="_blank" 
+              rel="noopener noreferrer" 
+              className="text-[#FFD700] hover:text-[#FFC700] font-mono flex items-center gap-1"
+              onClick={() => setIsMenuOpen(false)}
+            >
+              Discussion
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+            </a>
+            {/* Mobile Token Links */}
+            <div className="space-y-2 pl-2">
+              <a 
+                href="https://basescan.org/address/0x0aB96f7A85f8480c0220296C3332488ce38D9818"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block text-blue-400 hover:text-blue-300 font-mono text-sm"
+              >
+                $BILLBOARD Contract
+              </a>
+            </div>
+          </nav>
+        </div>
+      )}
     </header>
   );
 } 
