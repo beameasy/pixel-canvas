@@ -2,7 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import Ticker from '../terminal/Ticker';
+// import Ticker from '../terminal/Ticker';
+import TickerV2 from '../terminal/TickerV2';
 
 interface HeaderProps {
   authenticated: boolean;
@@ -30,8 +31,8 @@ export default function Header({ authenticated, onLogin, onLogout, userAddress }
 
   return (
     <header className="static bg-slate-800/95 backdrop-blur-sm border-b border-slate-700 relative z-[100]">
-      <div className="fixed top-0 left-0 right-0 z-[101]">
-        <Ticker />
+      <div className="fixed top-0 left-0 right-0 z-[101] overflow-hidden h-6 flex items-center">
+        <TickerV2 />
       </div>
       <div className="w-full max-w-[1200px] mx-auto flex items-center justify-between px-4 py-4 pt-8">
         <div className="flex items-center">

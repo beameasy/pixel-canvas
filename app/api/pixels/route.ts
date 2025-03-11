@@ -475,8 +475,11 @@ export async function POST(request: Request) {
     
     // Calculate top users from history
     const topUsers = calculateTopUsers(pixelsArray);
+    
+    // Calculate top users from last 24 hours
+    const topUsers24h = calculateTopUsers24h(pixelsArray);
 
-    console.log('📤 Sending Pusher event with topUsers:', topUsers.length);
+    console.log('📤 Sending Pusher event with topUsers:', topUsers.length, 'and topUsers24h:', topUsers24h.length);
 
     // Calculate activity data and include it in Pusher event
     const activitySpikes = await calculateActivitySpikes();
@@ -491,6 +494,7 @@ export async function POST(request: Request) {
         await pusher.trigger('canvas', 'pixel-placed', { 
           pixel: pixelData,
           topUsers: topUsers,
+          topUsers24h: topUsers24h,
           activitySpikes: activitySpikes
         });
 
@@ -559,6 +563,35 @@ function calculateTopUsers(pixels: any[]) {
     .filter(pixel => {
       const placedAt = new Date(pixel.placed_at).getTime();
       return (now - placedAt) <= ONE_HOUR;
+    })
+    .reduce<Record<string, any>>((acc, pixel) => {
+      const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
+      if (!acc[wallet_address]) {
+        acc[wallet_address] = {
+          wallet_address,
+          count: 0,
+          farcaster_username,
+          farcaster_pfp
+        };
+      }
+      acc[wallet_address].count++;
+      return acc;
+    }, {});
+
+  return Object.values(userCounts)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+}
+
+function calculateTopUsers24h(pixels: any[]) {
+  const now = Date.now();
+  const ONE_DAY = 24 * 60 * 60 * 1000;
+
+  // Filter pixels from last 24 hours and count by user
+  const userCounts = pixels
+    .filter(pixel => {
+      const placedAt = new Date(pixel.placed_at).getTime();
+      return (now - placedAt) <= ONE_DAY;
     })
     .reduce<Record<string, any>>((acc, pixel) => {
       const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
