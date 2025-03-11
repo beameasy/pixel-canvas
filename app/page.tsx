@@ -29,7 +29,7 @@ const logger = {
 };
 
 export default function Home() {
-  const { authenticated, user, getAccessToken } = usePrivy();
+  const { authenticated, user, getAccessToken, login } = usePrivy();
   const { isBanned, banReason } = useBanStatus();
   
   // Group related UI states together
@@ -41,6 +41,7 @@ export default function Home() {
     touchMode: 'place' as 'place' | 'view',
     showTokenomicsPopup: false,
     canvasError: false,
+    showWalletConnectModal: false,
   });
   
   // Use a ref for canvasRef to avoid unnecessary re-renders
@@ -54,6 +55,10 @@ export default function Home() {
   };
 
   const handleAuthError = () => {
+    // Show the wallet connection modal
+    updateUiState({ showWalletConnectModal: true });
+    
+    // Still show the smaller error message for 3 seconds
     updateUiState({ showError: true });
     setTimeout(() => updateUiState({ showError: false }), 3000);
   };
@@ -359,6 +364,87 @@ export default function Home() {
     (window as any).securePixelPlacement = securePixelPlacement;
   }, [user, authenticated]);
 
+  // Add a component for the wallet connection modal
+  const WalletConnectModal = () => {
+    const [isConnecting, setIsConnecting] = useState(false);
+    
+    const handleConnectWallet = async () => {
+      try {
+        setIsConnecting(true);
+        await login();
+        updateUiState({ showWalletConnectModal: false });
+      } catch (error) {
+        console.error('Error connecting wallet:', error);
+      } finally {
+        setIsConnecting(false);
+      }
+    };
+    
+    return (
+      <div className="fixed inset-0 flex items-center justify-center z-[200] bg-black/70" onClick={() => updateUiState({ showWalletConnectModal: false })}>
+        <div className="bg-slate-900 border border-slate-700 rounded-lg shadow-xl p-6 max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+          <div className="text-center">
+            <h3 className="font-mono text-xl text-[#FFD700] mb-2">Connect Your Wallet</h3>
+            <p className="text-slate-300 mb-6">Connect your wallet to place pixels on the canvas and join the community!</p>
+            
+            <div className="space-y-4 mb-6">
+              <div className="flex items-center">
+                <div className="bg-purple-500/20 rounded-full p-2 mr-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                  </svg>
+                </div>
+                <div className="text-left">
+                  <h4 className="font-mono text-md text-white">Place Pixels</h4>
+                  <p className="text-slate-400 text-sm">Contribute to the collaborative canvas</p>
+                </div>
+              </div>
+              
+              <div className="flex items-center">
+                <div className="bg-green-500/20 rounded-full p-2 mr-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                </div>
+                <div className="text-left">
+                  <h4 className="font-mono text-md text-white">Climb the Leaderboard</h4>
+                  <p className="text-slate-400 text-sm">Compete with other pixel artists</p>
+                </div>
+              </div>
+              
+              <div className="flex items-center">
+                <div className="bg-blue-500/20 rounded-full p-2 mr-3">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                </div>
+                <div className="text-left">
+                  <h4 className="font-mono text-md text-white">Join the Community</h4>
+                  <p className="text-slate-400 text-sm">Be part of Billboard on Base</p>
+                </div>
+              </div>
+            </div>
+            
+            <button
+              onClick={handleConnectWallet}
+              disabled={isConnecting}
+              className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isConnecting ? 'Connecting...' : 'Connect Wallet'}
+            </button>
+            
+            <button 
+              onClick={() => updateUiState({ showWalletConnectModal: false })}
+              className="mt-4 text-slate-400 hover:text-slate-300 font-mono text-sm"
+            >
+              Maybe Later
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
       <Head>
@@ -380,9 +466,20 @@ export default function Home() {
           
           <div className="flex flex-col items-center relative">
             {!authenticated && uiState.showError && (
-              <div className="absolute -top-8 left-1/2 transform -translate-x-1/2 z-50">
-                <div className="font-mono text-red-500 text-sm animate-pulse bg-slate-900/90 px-4 py-2 rounded-lg">
-                  connect wallet to place pixels
+              <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-sm">
+                <div className="font-mono bg-slate-900/95 border border-yellow-500 text-yellow-400 text-sm px-4 py-3 rounded-lg shadow-lg animate-pulse flex flex-col">
+                  <div className="flex items-center">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className="font-bold">Connect wallet to place pixels</p>
+                  </div>
+                  <button 
+                    onClick={login}
+                    className="mt-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-1 px-3 rounded text-sm transition-colors duration-200"
+                  >
+                    Connect Now
+                  </button>
                 </div>
               </div>
             )}
@@ -438,6 +535,9 @@ export default function Home() {
               />
             )}
           </div>
+          
+          {/* Add the wallet connection modal */}
+          {uiState.showWalletConnectModal && !authenticated && <WalletConnectModal />}
         </main>
       </div>
       

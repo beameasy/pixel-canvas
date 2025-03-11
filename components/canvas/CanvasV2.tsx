@@ -950,16 +950,26 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
       isDragging: false
     }));
 
-    // Only place pixel if it's a left click, hasn't moved much, and we have a valid click start
-    if (e.button === 0 && !hasMoved && interactionState.previewPixel && address) {
+    // Only place pixel if it's a left click, hasn't moved much, and we have a valid preview pixel
+    if (e.button === 0 && !hasMoved && interactionState.previewPixel) {
       const { x, y } = interactionState.previewPixel;
       
-      try {
-        await handlePlacePixel(x, y, selectedColor);
-      } catch (error) {
-        if (error instanceof Error && 
-            (error.message.includes('auth') || error.message.includes('token'))) {
-          onAuthError();
+      // Check if user is authenticated
+      if (!authenticated) {
+        // Trigger auth error to show the wallet connect modal
+        onAuthError();
+        return;
+      }
+      
+      // Continue with pixel placement for authenticated users
+      if (address) {
+        try {
+          await handlePlacePixel(x, y, selectedColor);
+        } catch (error) {
+          if (error instanceof Error && 
+              (error.message.includes('auth') || error.message.includes('token'))) {
+            onAuthError();
+          }
         }
       }
     }
@@ -1606,14 +1616,25 @@ const Canvas = forwardRef<CanvasRef, CanvasProps>(({ selectedColor, onColorSelec
     // Clear tooltip when touch ends
     setHoverData(null);
     
-    // Check if user tried to place a pixel but is not authenticated
-    if (
-      touchMode === 'place' && 
-      interactionState.previewPixel && 
-      !authenticated
-    ) {
-      onAuthError();
-      clearPreviewPixel();
+    // In placement mode, if there's a preview pixel position set
+    if (touchMode === 'place' && interactionState.previewPixel) {
+      // If not authenticated, show the wallet connect modal
+      if (!authenticated) {
+        onAuthError();
+        clearPreviewPixel();
+        return;
+      }
+      
+      // Continue with pixel placement for authenticated users
+      if (address) {
+        const { x, y } = interactionState.previewPixel;
+        handlePlacePixel(x, y, selectedColor).catch(error => {
+          if (error instanceof Error && 
+              (error.message.includes('auth') || error.message.includes('token'))) {
+            onAuthError();
+          }
+        });
+      }
     }
   };
 

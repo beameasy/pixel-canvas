@@ -8,6 +8,7 @@ import Header from '@/components/layout/Header';
 import { usePrivy } from '@privy-io/react-auth';
 import { usePathname } from 'next/navigation';
 import { SpeedInsights } from "@vercel/speed-insights/next"
+import { Analytics } from '@vercel/analytics/react';
 
 function AppContent({ children }: { children: React.ReactNode }) {
   const { login, authenticated, user, logout } = usePrivy();
@@ -125,6 +126,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </AppContent>
         </Providers>
         <SpeedInsights />
+        <Analytics />
       </body>
     </html>
   );
