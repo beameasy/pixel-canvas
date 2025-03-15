@@ -87,18 +87,31 @@ export default function Leaderboard() {
           console.log('Raw response start:', text.substring(0, 500) + '...');
         }
         
-        data = JSON.parse(text);
+        const parsedData = JSON.parse(text);
+        
+        // Check for the expected structure with users property
+        if (parsedData && typeof parsedData === 'object' && Array.isArray(parsedData.users)) {
+          data = parsedData.users;
+          console.log(`Received ${data.length} leaderboard entries with pagination info`);
+        } else if (Array.isArray(parsedData)) {
+          // Fallback for backward compatibility
+          data = parsedData;
+          console.log(`Received ${data.length} leaderboard entries (array format)`);
+        } else {
+          console.error('Unexpected data format:', parsedData);
+          throw new Error('Unexpected data format - expected object with users array');
+        }
       } catch (e) {
         console.error('Failed to parse response as JSON:', e);
         throw new Error('Failed to parse server response as JSON');
       }
       
       if (!Array.isArray(data)) {
-        console.error('Unexpected data format:', data);
+        console.error('Unexpected data format after processing:', data);
         throw new Error('Unexpected data format - expected array');
       }
       
-      console.log(`Received ${data.length} leaderboard entries at time:`, Date.now());
+      console.log(`Processing ${data.length} leaderboard entries at time:`, Date.now());
       
       setUsers(data);
       setLastUpdateTime(new Date());

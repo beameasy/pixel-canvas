@@ -1,104 +1,110 @@
 'use client';
 
-import React, { useState } from 'react';
-import billboardLogo from './images/logo.png';
+import React, { useState, useEffect } from 'react';
 
 const GRID_SIZE = 400;
 const SCALE_FACTOR = 4;
-const SHARE_SIZE = GRID_SIZE * SCALE_FACTOR;
 const LOGO_HEIGHT = 60 * SCALE_FACTOR;
-const TOTAL_HEIGHT = SHARE_SIZE + LOGO_HEIGHT;
+const LOGO_PATH = '/images/logo.png';
 
-export function ShareCanvas() {
-  const [isGenerating, setIsGenerating] = useState(false);
+interface ShareCanvasProps {
+  canvasRef: React.RefObject<{
+    resetView: () => void;
+    clearCanvas: () => void;
+    shareCanvas: () => Promise<string>;
+  } | null>;
+}
+
+export function ShareCanvas({ canvasRef }: ShareCanvasProps) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
 
   const handleGeneratePreview = async () => {
+    if (!canvasRef?.current) {
+      console.error('No canvas reference available');
+      return;
+    }
     setIsGenerating(true);
+
     try {
-      console.log('Creating share canvas...');
-      const canvas = new OffscreenCanvas(SHARE_SIZE, TOTAL_HEIGHT);
-      const ctx = canvas.getContext('2d');
-      if (!ctx) throw new Error('No context');
+      // Get the canvas snapshot
+      const canvasDataUrl = await canvasRef.current.shareCanvas();
+      
+      // Create a new canvas with space for the logo
+      const finalCanvas = document.createElement('canvas');
+      const ctx = finalCanvas.getContext('2d');
+      if (!ctx) throw new Error('Could not get context');
 
-      // Enable image smoothing
-      ctx.imageSmoothingEnabled = false;
+      // Load the canvas image to get its dimensions
+      const canvasImg = new Image();
+      await new Promise<void>((resolve, reject) => {
+        canvasImg.onload = () => resolve();
+        canvasImg.onerror = reject;
+        canvasImg.src = canvasDataUrl;
+      });
 
-      // Scale everything up
-      ctx.scale(SCALE_FACTOR, SCALE_FACTOR);
+      // Set canvas size to include logo area
+      finalCanvas.width = canvasImg.width;
+      finalCanvas.height = canvasImg.height + LOGO_HEIGHT;
 
       // Draw dark background for logo area
       ctx.fillStyle = '#1F2937';
-      ctx.fillRect(0, 0, GRID_SIZE, LOGO_HEIGHT / SCALE_FACTOR);
+      ctx.fillRect(0, 0, finalCanvas.width, LOGO_HEIGHT);
 
-      // Load and draw the logo image
+      // Load and draw the logo
       const logoImg = new Image();
       try {
-        await new Promise((resolve, reject) => {
-          logoImg.onload = resolve;
-          logoImg.onerror = (e) => reject(new Error(`Failed to load logo: ${e}`));
-          logoImg.src = billboardLogo.src;
+        await new Promise<void>((resolve, reject) => {
+          logoImg.onload = () => resolve();
+          logoImg.onerror = (e) => {
+            console.error('Logo load error details:', e);
+            reject(new Error('Failed to load logo'));
+          };
+          logoImg.src = LOGO_PATH;
         });
+
+        // Calculate logo dimensions
+        const logoAspectRatio = logoImg.width / logoImg.height;
+        const maxLogoHeight = LOGO_HEIGHT * 0.7; // 70% of logo area
+        const maxLogoWidth = finalCanvas.width * 0.9; // 90% of canvas width
+        
+        let logoWidth, logoHeight;
+        if (maxLogoWidth / maxLogoHeight > logoAspectRatio) {
+          logoHeight = maxLogoHeight;
+          logoWidth = logoHeight * logoAspectRatio;
+        } else {
+          logoWidth = maxLogoWidth;
+          logoHeight = logoWidth / logoAspectRatio;
+        }
+
+        // Center logo
+        const logoX = (finalCanvas.width - logoWidth) / 2;
+        const logoY = (LOGO_HEIGHT - logoHeight) / 2;
+        
+        // Draw logo
+        ctx.drawImage(logoImg, logoX, logoY, logoWidth, logoHeight);
       } catch (logoError) {
-        console.error('Logo loading error:', logoError);
+        console.error('Failed to load or draw logo:', logoError);
         throw logoError;
       }
 
-      // Calculate logo dimensions maintaining aspect ratio
-      const logoAspectRatio = logoImg.width / logoImg.height;
-      const maxLogoHeight = (LOGO_HEIGHT / SCALE_FACTOR) * 0.7; // Reduced to 70% to allow for spacing
-      const maxLogoWidth = GRID_SIZE * 0.9;
-      
-      let logoWidth, logoHeight;
-      
-      if (maxLogoWidth / maxLogoHeight > logoAspectRatio) {
-        logoHeight = maxLogoHeight;
-        logoWidth = logoHeight * logoAspectRatio;
-      } else {
-        logoWidth = maxLogoWidth;
-        logoHeight = logoWidth / logoAspectRatio;
-      }
+      // Draw the canvas snapshot below the logo
+      ctx.drawImage(canvasImg, 0, LOGO_HEIGHT);
 
-      // Center horizontally and add equal spacing vertically
-      const logoX = (GRID_SIZE - logoWidth) / 2;
-      const verticalPadding = ((LOGO_HEIGHT / SCALE_FACTOR) - logoHeight) / 2;
-      const logoY = verticalPadding;
-      
-      try {
-        ctx.drawImage(logoImg, logoX, logoY, logoWidth, logoHeight);
-      } catch (drawError) {
-        console.error('Draw error:', drawError);
-        throw drawError;
-      }
-
-      // Draw white background for canvas area
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, LOGO_HEIGHT / SCALE_FACTOR, GRID_SIZE, GRID_SIZE);
-
-      // Get and draw pixels
-      console.log('Fetching pixels...');
-      const response = await fetch('/api/pixels');
-      if (!response.ok) {
-        throw new Error(`Failed to fetch pixels: ${response.status} ${response.statusText}`);
-      }
-      const pixels = await response.json();
-      console.log(`Got ${pixels.length} pixels`);
-
-      ctx.translate(0, LOGO_HEIGHT / SCALE_FACTOR);
-      pixels.forEach((pixel: any) => {
-        ctx.fillStyle = pixel.color;
-        ctx.fillRect(pixel.x, pixel.y, 1, 1);
+      // Convert to blob with optimal settings
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        finalCanvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('Failed to create blob'));
+          },
+          'image/png',
+          1.0 // Use maximum quality for PNG
+        );
       });
 
-      // Convert to blob with max quality
-      console.log('Converting to blob...');
-      const blob = await canvas.convertToBlob({ 
-        type: 'image/png',
-        quality: 1
-      });
       const url = URL.createObjectURL(blob);
       setPreviewUrl(url);
-      console.log('Preview URL created');
 
     } catch (error) {
       console.error('Failed to generate preview:', error);

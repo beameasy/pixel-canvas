@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import SideColorPicker from '../ui/SideColorPicker';
-import { ShareCanvas } from '../share/ShareCanvas';
 import ShareCanvasV2 from '../share/ShareCanvasV2';
 
 interface ControlsProps {
@@ -47,7 +46,6 @@ export default function Controls({ onResetView, selectedColor, onColorSelect, fl
         >
           Reset View
         </button>
-        <ShareCanvas />
         <ShareCanvasV2 canvasRef={canvasRef} />
       </div>
       <div className="w-full mb-1 sm:mb-2">

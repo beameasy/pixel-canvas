@@ -1,13 +1,11 @@
 'use client';
 
-import React, { useEffect, useState, memo } from 'react';
+import React, { useEffect, useState, memo, useCallback } from 'react';
 import Image from 'next/image';
 import { pusherManager } from '@/lib/client/pusherManager';
 import { usePrivy } from '@privy-io/react-auth';
 import Marquee from 'react-fast-marquee';
 import FarcasterLogo from '@/components/ui/FarcasterLogo';
-// @ts-ignore
-import PageVisibility from 'react-page-visibility';
 
 interface TopUser {
   wallet_address: string;
@@ -28,121 +26,167 @@ const TickerV2 = memo(function TickerV2() {
   const { getAccessToken } = usePrivy();
   const [users, setUsers] = useState<TopUser[]>([]);
   const [users24h, setUsers24h] = useState<TopUser24Hours[]>([]);
-  const [isVisible, setIsVisible] = useState(true);
+  const [retryCount, setRetryCount] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const maxRetries = 3;
+  const retryDelay = 5000; // Increased to 5 seconds to avoid rate limiting
   
-  const handleVisibilityChange = (visible: boolean) => {
-    setIsVisible(visible);
-  };
-
-  const handlePixelPlaced = (data: { topUsers: TopUser[], topUsers24h?: TopUser24Hours[] }) => {
+  const handlePixelPlaced = useCallback((data: { pixel: any, topUsers?: TopUser[], topUsers24h?: TopUser24Hours[] }) => {
+    if (!data) return;
+    console.log('Received Pusher update:', data);
+    
+    // Only update if we received new top users data
     if (Array.isArray(data.topUsers) && data.topUsers.length > 0) {
       setUsers(prevUsers => {
-        if (!prevUsers || prevUsers.length === 0) return data.topUsers;
-        
-        return data.topUsers.map(newUser => {
-          const prevUser = prevUsers.find(p => p.wallet_address === newUser.wallet_address);
-          
-          if (newUser.farcaster_username || newUser.farcaster_pfp) {
-            return newUser;
-          }
-          
-          if (prevUser && (prevUser.farcaster_username || prevUser.farcaster_pfp)) {
-            return {
-              ...newUser,
-              farcaster_username: prevUser.farcaster_username,
-              farcaster_pfp: prevUser.farcaster_pfp
-            };
-          }
-          
-          return newUser;
-        });
+        // Skip update if data is the same
+        if (JSON.stringify(prevUsers) === JSON.stringify(data.topUsers)) {
+          return prevUsers;
+        }
+        return data.topUsers ?? prevUsers;
       });
     }
     
     if (data.topUsers24h && Array.isArray(data.topUsers24h) && data.topUsers24h.length > 0) {
-      setUsers24h(data.topUsers24h);
+      setUsers24h(prevUsers => {
+        // Skip update if data is the same
+        if (JSON.stringify(prevUsers) === JSON.stringify(data.topUsers24h)) {
+          return prevUsers;
+        }
+        return data.topUsers24h ?? prevUsers;
+      });
     }
-  };
+  }, []);
 
-  const initialize = async () => {
+  const fetchInitialTickerData = useCallback(async () => {
     try {
+      console.log('Fetching initial ticker data...');
+      setIsLoading(true);
+      setError(null);
+      
       const token = await getAccessToken();
+      console.log('Got auth token:', token ? 'yes' : 'no');
+      
+      // Only retry for auth token if we haven't exceeded retries
+      if (!token && retryCount < maxRetries) {
+        console.log(`No auth token yet, retrying in ${retryDelay}ms (attempt ${retryCount + 1}/${maxRetries})`);
+        setRetryCount(prev => prev + 1);
+        setTimeout(() => fetchInitialTickerData(), retryDelay);
+        return;
+      }
+
+      // Add a small delay between retries to avoid rate limiting
+      if (retryCount > 0) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+
+      // Fetch both 1h and 24h data in parallel
+      console.log('Fetching ticker data...');
       const [tickerResponse, users24hResponse] = await Promise.all([
         fetch('/api/ticker', {
+          method: 'GET',
           headers: {
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache',
-            'x-privy-token': token || ''
+            ...(token ? { 'x-privy-token': token } : {})
           }
         }),
         fetch('/api/ticker?period=24h', {
+          method: 'GET',
           headers: {
             'Cache-Control': 'no-cache',
             'Pragma': 'no-cache',
-            'x-privy-token': token || ''
+            ...(token ? { 'x-privy-token': token } : {})
           }
         })
       ]);
-      
-      const tickerData = await tickerResponse.json();
-      if (Array.isArray(tickerData) && tickerData.length > 0) {
+
+      // Handle rate limiting for either response
+      if (tickerResponse.status === 429 || users24hResponse.status === 429) {
+        const retryAfter = parseInt(tickerResponse.headers.get('Retry-After') || users24hResponse.headers.get('Retry-After') || '5');
+        console.log(`Rate limited, retrying in ${retryAfter}s`);
+        setError('Rate limited, retrying...');
+        setTimeout(() => fetchInitialTickerData(), retryAfter * 1000);
+        return;
+      }
+
+      if (!tickerResponse.ok || !users24hResponse.ok) {
+        throw new Error(`API error: ${tickerResponse.status}/${users24hResponse.status}`);
+      }
+
+      // Parse responses
+      const [tickerData, users24hData] = await Promise.all([
+        tickerResponse.json(),
+        users24hResponse.json()
+      ]);
+
+      console.log('Received ticker data:', {
+        ticker: tickerData?.length || 0,
+        users24h: users24hData?.length || 0,
+        tickerSample: tickerData?.[0],
+        users24hSample: users24hData?.[0]
+      });
+
+      // Validate and set data
+      if (Array.isArray(tickerData)) {
         setUsers(tickerData);
       }
       
-      const users24hData = await users24hResponse.json();
-      if (Array.isArray(users24hData) && users24hData.length > 0) {
+      if (Array.isArray(users24hData)) {
         setUsers24h(users24hData);
       }
-    } catch (error) {
-      console.error('Failed to load ticker data:', error);
-    }
 
-    // Ensure Pusher is connected
-    if (!pusherManager.isConnected()) {
-      pusherManager.reconnect();
+      // Reset retry count and error state if we got any valid data
+      if ((tickerData && tickerData.length > 0) || (users24hData && users24hData.length > 0)) {
+        setRetryCount(0);
+        setError(null);
+      } else {
+        setError('No activity in the last 24 hours');
+      }
+    } catch (error) {
+      console.error('Failed to load initial ticker data:', error);
+      setError(error instanceof Error ? error.message : 'Failed to load ticker data');
+      
+      // Only retry on error if we haven't exceeded retries
+      if (retryCount < maxRetries) {
+        console.log(`Error fetching data, retrying in ${retryDelay}ms (attempt ${retryCount + 1}/${maxRetries})`);
+        setRetryCount(prev => prev + 1);
+        setTimeout(() => fetchInitialTickerData(), retryDelay);
+      }
+    } finally {
+      setIsLoading(false);
     }
-    
-    pusherManager.subscribe('pixel-placed', handlePixelPlaced);
-  };
+  }, [getAccessToken, retryCount]);
 
   // Initialize data and setup Pusher
   useEffect(() => {
-    initialize();
+    console.log('TickerV2 component mounted');
     
-    // Set up a timer to check connection every 30 seconds
-    const connectionCheck = setInterval(() => {
-      if (!pusherManager.isConnected()) {
-        pusherManager.reconnect();
-        initialize();
-      }
-    }, 30000);
-    
-    // Add periodic refresh to keep ticker data current
-    const refreshInterval = setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        initialize();
-      }
-    }, 60000); // Refresh every 60 seconds
-    
-    return () => {
-      clearInterval(connectionCheck);
-      clearInterval(refreshInterval);
-      pusherManager.unsubscribe('pixel-placed', handlePixelPlaced);
-    };
-  }, [getAccessToken]);
+    const initialize = async () => {
+      await fetchInitialTickerData();
 
-  // Set up page visibility handling
-  useEffect(() => {
-    const handleVisChange = () => {
-      setIsVisible(document.visibilityState === 'visible');
+      // Ensure Pusher is connected
+      if (!pusherManager.isConnected()) {
+        console.log('Reconnecting Pusher...');
+        pusherManager.reconnect();
+      }
+      
+      // Create a stable reference to the event handler
+      const eventHandler = (data: any) => handlePixelPlaced(data);
+      
+      // Subscribe to Pusher events
+      console.log('Subscribing to pixel-placed events...');
+      pusherManager.subscribe('pixel-placed', eventHandler);
+
+      // Return cleanup function
+      return () => {
+        console.log('Cleaning up Pusher subscription...');
+        pusherManager.unsubscribe('pixel-placed', eventHandler);
+      };
     };
-    
-    document.addEventListener('visibilitychange', handleVisChange);
-    
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisChange);
-    };
-  }, []);
+
+    initialize();
+  }, [fetchInitialTickerData, handlePixelPlaced]);
 
   const formatUser = (user: TopUser, index: number) => {
     return (
@@ -261,8 +305,39 @@ const TickerV2 = memo(function TickerV2() {
     </div>
   );
 
-  // If there's no data or the page isn't visible, don't render anything
-  if (!isVisible || (users.length === 0 && users24h.length === 0)) {
+  // If loading or error, show appropriate message
+  if (isLoading) {
+    return (
+      <div className="ticker-wrapper">
+        <div className="ticker-loading">Loading ticker data...</div>
+        <style jsx>{`
+          .ticker-loading {
+            color: #666;
+            text-align: center;
+            padding: 4px;
+          }
+        `}</style>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="ticker-wrapper">
+        <div className="ticker-error">{error}</div>
+        <style jsx>{`
+          .ticker-error {
+            color: #ff4444;
+            text-align: center;
+            padding: 4px;
+          }
+        `}</style>
+      </div>
+    );
+  }
+
+  // If there's no data, don't render anything
+  if (users.length === 0 && users24h.length === 0) {
     return null;
   }
 

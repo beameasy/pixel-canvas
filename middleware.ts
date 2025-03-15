@@ -17,6 +17,7 @@ const PUBLIC_ROUTES = [
 const RATE_LIMIT = {
   pixels: { points: 150, duration: 60 },   // More permissive, let tokenTiers handle specific cooldowns
   canvas: { points: 60, duration: 60 },    // Canvas state fetching
+  ticker: { points: 240, duration: 60 },   // Ticker-specific rate limit (4 requests per second to handle both 1h and 24h)
   general: { points: 100, duration: 60 }   // Other endpoints
 };
 
@@ -51,7 +52,7 @@ function isAdminWallet(walletAddress: string): boolean {
   return ADMIN_WALLETS.includes(walletAddress.toLowerCase());
 }
 
-async function checkRateLimit(ip: string, type: 'pixels' | 'canvas' | 'general') {
+async function checkRateLimit(ip: string, type: 'pixels' | 'canvas' | 'ticker' | 'general') {
   const key = `rate_limit:${type}:${ip}`
   const limit = RATE_LIMIT[type]
 
@@ -353,6 +354,11 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     const passed = await checkRateLimit(ip, 'canvas');
     if (!passed) {
       return NextResponse.json({ error: 'Rate limit exceeded for canvas requests' }, { status: 429 });
+    }
+  } else if (pathname.includes('/api/ticker')) {
+    const passed = await checkRateLimit(ip, 'ticker');
+    if (!passed) {
+      return NextResponse.json({ error: 'Rate limit exceeded for ticker requests' }, { status: 429 });
     }
   } else if (pathname.includes('/api/')) {
     const passed = await checkRateLimit(ip, 'general');

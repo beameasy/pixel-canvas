@@ -103,7 +103,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return () => {
       clearTimeout(initialCheck);
       document.removeEventListener('visibilitychange', handleVisibility);
-      window.addEventListener('online', handleOnline);
+      window.removeEventListener('online', handleOnline);
     };
   }, []);
 

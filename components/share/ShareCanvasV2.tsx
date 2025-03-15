@@ -1,11 +1,11 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import billboardLogo from './images/logo.png';
 
 const GRID_SIZE = 400;
 const SCALE_FACTOR = 4;
 const LOGO_HEIGHT = 60 * SCALE_FACTOR;
+const LOGO_PATH = '/images/logo.png';
 
 interface ShareCanvasV2Props {
   canvasRef: React.RefObject<{
@@ -30,13 +30,6 @@ export default function ShareCanvasV2({ canvasRef }: ShareCanvasV2Props) {
   }, [canvasRef]);
 
   const handleGeneratePreview = async () => {
-    console.log('Generate preview clicked:', {
-      hasRef: !!canvasRef,
-      ref: canvasRef,
-      current: canvasRef?.current,
-      anyCanvas: document.querySelector('canvas')
-    });
-
     if (!canvasRef?.current) {
       console.error('No canvas reference available');
       return;
@@ -54,8 +47,8 @@ export default function ShareCanvasV2({ canvasRef }: ShareCanvasV2Props) {
 
       // Load the canvas image to get its dimensions
       const canvasImg = new Image();
-      await new Promise((resolve, reject) => {
-        canvasImg.onload = resolve;
+      await new Promise<void>((resolve, reject) => {
+        canvasImg.onload = () => resolve();
         canvasImg.onerror = reject;
         canvasImg.src = canvasDataUrl;
       });
@@ -70,40 +63,56 @@ export default function ShareCanvasV2({ canvasRef }: ShareCanvasV2Props) {
 
       // Load and draw the logo
       const logoImg = new Image();
-      await new Promise((resolve, reject) => {
-        logoImg.onload = resolve;
-        logoImg.onerror = reject;
-        logoImg.src = billboardLogo.src;
-      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          logoImg.onload = () => resolve();
+          logoImg.onerror = (e) => {
+            console.error('Logo load error details:', e);
+            reject(new Error('Failed to load logo'));
+          };
+          logoImg.src = LOGO_PATH;
+        });
 
-      // Calculate logo dimensions
-      const logoAspectRatio = logoImg.width / logoImg.height;
-      const maxLogoHeight = LOGO_HEIGHT * 0.7; // 70% of logo area
-      const maxLogoWidth = finalCanvas.width * 0.9; // 90% of canvas width
-      
-      let logoWidth, logoHeight;
-      if (maxLogoWidth / maxLogoHeight > logoAspectRatio) {
-        logoHeight = maxLogoHeight;
-        logoWidth = logoHeight * logoAspectRatio;
-      } else {
-        logoWidth = maxLogoWidth;
-        logoHeight = logoWidth / logoAspectRatio;
+        // Calculate logo dimensions
+        const logoAspectRatio = logoImg.width / logoImg.height;
+        const maxLogoHeight = LOGO_HEIGHT * 0.7; // 70% of logo area
+        const maxLogoWidth = finalCanvas.width * 0.9; // 90% of canvas width
+        
+        let logoWidth, logoHeight;
+        if (maxLogoWidth / maxLogoHeight > logoAspectRatio) {
+          logoHeight = maxLogoHeight;
+          logoWidth = logoHeight * logoAspectRatio;
+        } else {
+          logoWidth = maxLogoWidth;
+          logoHeight = logoWidth / logoAspectRatio;
+        }
+
+        // Center logo
+        const logoX = (finalCanvas.width - logoWidth) / 2;
+        const logoY = (LOGO_HEIGHT - logoHeight) / 2;
+        
+        // Draw logo
+        ctx.drawImage(logoImg, logoX, logoY, logoWidth, logoHeight);
+      } catch (logoError) {
+        console.error('Failed to load or draw logo:', logoError);
+        throw logoError;
       }
-
-      // Center logo
-      const logoX = (finalCanvas.width - logoWidth) / 2;
-      const logoY = (LOGO_HEIGHT - logoHeight) / 2;
-      
-      // Draw logo
-      ctx.drawImage(logoImg, logoX, logoY, logoWidth, logoHeight);
 
       // Draw the canvas snapshot below the logo
       ctx.drawImage(canvasImg, 0, LOGO_HEIGHT);
 
-      // Convert to blob and create URL
-      const blob = await new Promise<Blob>((resolve) => 
-        finalCanvas.toBlob(blob => resolve(blob!), 'image/png', 1)
-      );
+      // Convert to blob with optimal settings
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        finalCanvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('Failed to create blob'));
+          },
+          'image/png',
+          1.0 // Use maximum quality for PNG
+        );
+      });
+
       const url = URL.createObjectURL(blob);
       setPreviewUrl(url);
 

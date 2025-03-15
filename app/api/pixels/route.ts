@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getUserTier, canOverwritePixel, canPlacePixel, getCooldownInfo, updateCooldownTimestamp, checkAndUpdateCooldown } from '@/lib/server/tokenTiers';
 import { DEFAULT_TIER } from '@/lib/server/tiers.config';
 import { queueDatabaseWrite, triggerQueueProcessing as queueProcessor } from '@/lib/queue';
+import { scanHash, getUserData } from '@/lib/server/redisUtils';
 
 const ONE_HOUR = 60 * 60 * 1000; // 1 hour in milliseconds
 
@@ -45,10 +46,10 @@ const VALID_COLORS = [
 // Get canvas state
 export async function GET() {
   try {
-    const pixels = await redis.hgetall('canvas:pixels');
+    const pixels = await scanHash('canvas:pixels');
     
     // Ensure we return an empty array if no pixels found
-    if (!pixels) return NextResponse.json([], {
+    if (!pixels || Object.keys(pixels).length === 0) return NextResponse.json([], {
       headers: {
         'Cache-Control': 'public, max-age=5, stale-while-revalidate=10'
       }
@@ -152,13 +153,14 @@ async function setPixelMetadata(x: number, y: number, metadata: PixelMetadata): 
 // Add balance caching helper
 async function getTokenBalance(walletAddress: string, session: any): Promise<number> {
   try {
-    const userData = await redis.hget('users', walletAddress);
+    // Use the utility function to get user data
+    const userData = await getUserData(walletAddress);
+    
     if (userData) {
-      const parsedUserData = typeof userData === 'string' ? JSON.parse(userData) : userData;
       // Keep existing Privy ID if present
-      if (session?.privy_id && !parsedUserData.privy_id) {
+      if (session?.privy_id && !userData.privy_id) {
         const updatedUserData = {
-          ...parsedUserData,
+          ...userData,
           privy_id: session.privy_id,
           updated_at: new Date().toISOString()
         };
@@ -171,7 +173,7 @@ async function getTokenBalance(walletAddress: string, session: any): Promise<num
         const usersQueue = getQueueName('supabase:users:queue');
         await redis.rpush(usersQueue, JSON.stringify(updatedUserData));
       }
-      return parsedUserData.token_balance || 0;
+      return userData.token_balance || 0;
     }
   
     // If no cached data, fetch from chain and update user record
@@ -431,25 +433,16 @@ export async function POST(request: Request) {
       member: JSON.stringify(pixelData)
     });
     
-    // No need to update cooldown timestamp here anymore - it's already updated atomically
-    // if user is allowed to place a pixel
-    
     multi.rpush(pixelsQueue, JSON.stringify(pixelData));
     
     multi.set(`user:${walletAddress}:balance_changed`, "true", {ex: 60});
     
     await multi.exec();
 
-    console.log('📊 Queue stats:', {
-      pixelQueueLength: await redis.llen(pixelsQueue),
-      userQueueLength: await redis.llen(getQueueName('supabase:users:queue')),
-      hasCronSecret: !!process.env.CRON_SECRET
-    });
-
-    // Check queue length and trigger processing if necessary
-    const userQueueLength = await redis.llen(getQueueName('supabase:users:queue'));
+    // Get queue lengths
     const pixelQueueLength = await redis.llen(pixelsQueue);
-    
+    const userQueueLength = await redis.llen(getQueueName('supabase:users:queue'));
+
     // Log queue stats
     console.log('📊 Queue stats:', {
       pixelQueueLength,
@@ -457,7 +450,7 @@ export async function POST(request: Request) {
       hasCronSecret: !!process.env.CRON_SECRET
     });
     
-    // If queue has many items, trigger processing immediately instead of waiting for cron
+    // If queue has many items, trigger processing
     if ((pixelQueueLength >= 100 || userQueueLength >= 50) && process.env.CRON_SECRET) {
       console.log('📊 Queue threshold reached, triggering immediate processing');
       queueProcessor().catch(err => {
@@ -465,78 +458,124 @@ export async function POST(request: Request) {
       });
     }
 
-    // Get recent history for top users calculation - using zrange for sorted set
-    const pixelHistory = await redis.zrange('canvas:history', 0, -1);
-    
-    // Remove the JSON.parse since the data is already parsed
-    const pixelsArray = pixelHistory.map(p => 
-      typeof p === 'string' ? JSON.parse(p) : p
-    );
-    
-    // Calculate top users from history
-    const topUsers = calculateTopUsers(pixelsArray);
-    
-    // Calculate top users from last 24 hours
-    const topUsers24h = calculateTopUsers24h(pixelsArray);
+    // Only send the immediate pixel update via Pusher
+    try {
+      // Get recent history for top users calculation
+      const now = Date.now();
+      const oneHourAgo = now - (60 * 60 * 1000);
+      const oneDayAgo = now - (24 * 60 * 60 * 1000);
+      
+      // Get recent history using scores to limit data size
+      const recentHistory = await redis.zrange(
+        'canvas:history',
+        oneHourAgo,
+        now,
+        { byScore: true }
+      );
 
-    console.log('📤 Sending Pusher event with topUsers:', topUsers.length, 'and topUsers24h:', topUsers24h.length);
+      // Process pixels to count user activity
+      const userCounts = new Map<string, {
+        wallet_address: string;
+        count: number;
+        farcaster_username: string | null;
+        farcaster_pfp: string | null;
+      }>();
 
-    // Calculate activity data and include it in Pusher event
-    const activitySpikes = await calculateActivitySpikes();
+      // Process each pixel placement for last hour
+      for (const entry of recentHistory) {
+        const pixel = typeof entry === 'string' ? JSON.parse(entry) : entry;
+        const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
+        
+        if (!wallet_address) continue;
 
-    // Implement retry logic for Pusher events
-    let retries = 0;
-    const maxRetries = 3;
-
-    async function triggerPusherEventWithRetry() {
-      try {
-        // Main pixel-placed event
-        await pusher.trigger('canvas', 'pixel-placed', { 
-          pixel: pixelData,
-          topUsers: topUsers,
-          topUsers24h: topUsers24h,
-          activitySpikes: activitySpikes
-        });
-
-        // Also trigger a dedicated leaderboard-update event to ensure leaderboard catches it
-        await pusher.trigger('canvas', 'leaderboard-update', { 
-          triggerTime: Date.now(),
-          pixelId: pixelData.id
-        });
-
-        console.log('✅ Pusher events sent successfully');
-      } catch (error) {
-        console.error(`❌ Failed to send Pusher event (attempt ${retries + 1}/${maxRetries}):`, error);
-        if (retries < maxRetries) {
-          retries++;
-          await new Promise(resolve => setTimeout(resolve, 1000 * retries));
-          return triggerPusherEventWithRetry();
+        const key = wallet_address.toLowerCase();
+        const existing = userCounts.get(key);
+        
+        if (existing) {
+          existing.count++;
+          // Update Farcaster info if available
+          if (farcaster_username && !existing.farcaster_username) {
+            existing.farcaster_username = farcaster_username;
+          }
+          if (farcaster_pfp && !existing.farcaster_pfp) {
+            existing.farcaster_pfp = farcaster_pfp;
+          }
         } else {
-          console.error('❌ All Pusher event retry attempts failed');
+          userCounts.set(key, {
+            wallet_address,
+            count: 1,
+            farcaster_username: farcaster_username || null,
+            farcaster_pfp: farcaster_pfp || null
+          });
         }
       }
+
+      // Get 24h history
+      const dayHistory = await redis.zrange(
+        'canvas:history',
+        oneDayAgo,
+        now,
+        { byScore: true }
+      );
+
+      // Process pixels to count 24h user activity
+      const userCounts24h = new Map<string, {
+        wallet_address: string;
+        count: number;
+        farcaster_username: string | null;
+        farcaster_pfp: string | null;
+      }>();
+
+      // Process each pixel placement for last 24 hours
+      for (const entry of dayHistory) {
+        const pixel = typeof entry === 'string' ? JSON.parse(entry) : entry;
+        const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
+        
+        if (!wallet_address) continue;
+
+        const key = wallet_address.toLowerCase();
+        const existing = userCounts24h.get(key);
+        
+        if (existing) {
+          existing.count++;
+          if (farcaster_username && !existing.farcaster_username) {
+            existing.farcaster_username = farcaster_username;
+          }
+          if (farcaster_pfp && !existing.farcaster_pfp) {
+            existing.farcaster_pfp = farcaster_pfp;
+          }
+        } else {
+          userCounts24h.set(key, {
+            wallet_address,
+            count: 1,
+            farcaster_username: farcaster_username || null,
+            farcaster_pfp: farcaster_pfp || null
+          });
+        }
+      }
+
+      // Convert to arrays and sort by count
+      const topUsers = Array.from(userCounts.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+      const topUsers24h = Array.from(userCounts24h.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+      // Send the Pusher event with all data
+      await pusher.trigger('canvas', 'pixel-placed', { 
+        pixel: pixelData,
+        topUsers,
+        topUsers24h
+      });
+    } catch (error) {
+      console.error('Failed to send Pusher event:', error);
     }
-
-    await triggerPusherEventWithRetry();
-
-    // No need to manually trigger processing in production anymore
-    // The Vercel cron job will automatically process the queue
-    
-    // Let the client know if queue processing is active
-    const processingFlagKey = getProcessingFlagKey();
-    const processingActive = await redis.get(processingFlagKey);
-    const queueLength = await redis.llen(pixelsQueue);
-    
-    // Just log the queue status
-    console.log(`📊 Queue status: ${queueLength} items, processing: ${processingActive ? 'active' : 'inactive'}`);
 
     return NextResponse.json({ 
       success: true, 
-      pixel: pixelData,
-      queue: {
-        items: queueLength,
-        processing: !!processingActive
-      }
+      pixel: pixelData
     }, {
       headers: {
         'Cache-Control': 'no-store, max-age=0'
