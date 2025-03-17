@@ -1,85 +1,132 @@
 'use client';
 
 import { Providers } from './providers';
-import { usePrivy } from '@privy-io/react-auth';
-import { useState } from 'react';
-import Link from 'next/link';
-import Ticker from '@/components/terminal/Ticker';
-import { Geist, Geist_Mono } from "next/font/google";
 import './globals.css';
+import { pusherManager } from '@/lib/client/pusherManager';
+import { useEffect } from 'react';
+import Header from '@/components/layout/Header';
+import { usePrivy } from '@privy-io/react-auth';
+import { usePathname } from 'next/navigation';
+import { SpeedInsights } from "@vercel/speed-insights/next"
+import { Analytics } from '@vercel/analytics/react';
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-function Navigation() {
+function AppContent({ children }: { children: React.ReactNode }) {
   const { login, authenticated, user, logout } = usePrivy();
-  const [showDisconnect, setShowDisconnect] = useState(false);
 
-  const linkStyles = "text-[#FFD700] hover:text-[#FFC700] font-mono text-sm transition-colors";
+  // Consolidated initialization with prioritized tasks
+  useEffect(() => {
+    // Handle critical initialization immediately
+    const immediateInit = () => {
+      // Any critical initialization that shouldn't be delayed
+    };
+    
+    // Handle delayed initialization (for wallet proxies and other features)
+    const delayedInit = () => {
+      // Wallet initialization code here
+    };
+    
+    immediateInit();
+    const timer = setTimeout(delayedInit, 1000);
+    
+    return () => clearTimeout(timer);
+  }, []);
+  
+  // Handle visibility changes with proper error handling
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      try {
+        if (document.visibilityState === "visible") {
+          // Your existing code
+        }
+      } catch (error) {
+        console.warn("Error in visibility change handler:", error);
+      }
+    };
+    
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
 
   return (
-    <div className="w-full max-w-[1200px] mx-auto flex justify-between items-center px-4 py-4">
-      <nav className="flex items-center gap-6">
-        <Link href="/" className={linkStyles}>
-          Canvas
-        </Link>
-        <Link href="/logs" className={linkStyles}>
-          Logs
-        </Link>
-        <Link href="/leaderboard" className={linkStyles}>
-          Leaderboard
-        </Link>
-      </nav>
-      <div className="flex items-center">
-        {!authenticated ? (
-          <button onClick={login} className={linkStyles}>
-            Connect Wallet
-          </button>
-        ) : (
-          <button
-            onClick={logout}
-            onMouseEnter={() => setShowDisconnect(true)}
-            onMouseLeave={() => setShowDisconnect(false)}
-            className={`${linkStyles} ${showDisconnect ? 'text-red-500' : ''}`}
-          >
-            {showDisconnect ? 'click to disconnect' : `${user?.wallet?.address.slice(0, 6)}...${user?.wallet?.address.slice(-4)}`}
-          </button>
-        )}
+    <>
+      <Header 
+        authenticated={authenticated}
+        onLogin={login}
+        onLogout={logout}
+        userAddress={user?.wallet?.address}
+      />
+      <div>
+        {children}
       </div>
-    </div>
+    </>
   );
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+
+  // Centralized Pusher connection management
+  useEffect(() => {
+    console.log('🚀 Layout: Initializing Pusher connection on app load');
+    
+    // Initial connection setup
+    pusherManager.reconnect();
+    
+    // Set up reconnection strategy
+    const connectionCheck = () => {
+      if (!pusherManager.isConnected()) {
+        console.log('🔄 Reconnecting Pusher...');
+        pusherManager.reconnect();
+      }
+    };
+    
+    // Initial connection check
+    const initialCheck = setTimeout(connectionCheck, 1000);
+    
+    // Setup visibility change handler for reconnection
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        connectionCheck();
+      }
+    };
+    
+    // Setup online event handler
+    const handleOnline = () => {
+      console.log('🌐 Network online, checking Pusher connection');
+      connectionCheck();
+    };
+    
+    // Set up event listeners
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('online', handleOnline);
+    
+    return () => {
+      clearTimeout(initialCheck);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
+
+  // Route change handler with simplified logic
+  useEffect(() => {
+    console.log('🔄 Layout: Route changed to', pathname);
+    // Only check connection status on route change, no additional initialization
+    if (!pusherManager.isConnected()) {
+      console.log('🔌 Layout: Reconnecting Pusher after route change');
+      pusherManager.reconnect();
+    }
+  }, [pathname]);
+
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased bg-slate-800`}>
+      <body className="antialiased bg-slate-800 font-sans">
         <Providers>
-          {/* Header stack */}
-          <div className="relative">
-            {/* Ticker layer */}
-            <div className="h-10">
-              <Ticker />
-            </div>
-            
-            {/* Navigation layer */}
-            <div className="h-16 bg-slate-800">
-              <Navigation />
-            </div>
-          </div>
-
-          {/* Content area */}
-          <div className="mt-[104px] relative z-10">
+          <AppContent>
             {children}
-          </div>
+          </AppContent>
         </Providers>
+        <SpeedInsights />
+        <Analytics />
       </body>
     </html>
   );

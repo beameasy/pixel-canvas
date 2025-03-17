@@ -22,25 +22,29 @@ BEGIN
   END IF;
 
   -- Check if pixel exists at this position
-  SELECT p.*, u.token_balance as owner_balance
+  SELECT p.*
   INTO existing_pixel
   FROM pixels p
-  JOIN users u ON p.wallet_address = u.wallet_address
   WHERE p.x = NEW.x AND p.y = NEW.y
   ORDER BY p.placed_at DESC
   LIMIT 1;
 
-  -- Get writer's token balance
-  SELECT token_balance INTO writer_balance
-  FROM users
-  WHERE wallet_address = NEW.wallet_address;
-
-  -- If pixel exists, check token balances
+  -- If pixel exists, check current token balances (not the balance at placement time)
   IF existing_pixel IS NOT NULL THEN
-    -- Can only overwrite if writer has more tokens
-    IF writer_balance <= existing_pixel.owner_balance THEN
+    -- Get writer's current token balance
+    SELECT token_balance INTO writer_balance
+    FROM users
+    WHERE wallet_address = NEW.wallet_address;
+
+    -- Get current owner's current token balance
+    SELECT token_balance INTO current_owner_balance
+    FROM users
+    WHERE wallet_address = existing_pixel.wallet_address;
+
+    -- Can only overwrite if writer has more tokens than current balance of pixel owner
+    IF writer_balance <= current_owner_balance THEN
       RAISE EXCEPTION 'Cannot overwrite pixel - current owner has % tokens, you have % tokens', 
-        existing_pixel.owner_balance, writer_balance;
+        current_owner_balance, writer_balance;
     END IF;
   END IF;
 

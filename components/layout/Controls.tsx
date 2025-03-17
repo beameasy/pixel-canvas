@@ -2,7 +2,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import SideColorPicker from '../ui/SideColorPicker';
-import { ShareCanvas } from '../share/ShareCanvas';
 import ShareCanvasV2 from '../share/ShareCanvasV2';
 
 interface ControlsProps {
@@ -12,10 +11,10 @@ interface ControlsProps {
   flashMessage: string | null;
   touchMode: 'view' | 'place';
   onTouchModeChange: (mode: 'view' | 'place') => void;
-  canvasRef: React.RefObject<HTMLCanvasElement | {
+  canvasRef: React.RefObject<{
     resetView: () => void;
     clearCanvas: () => void;
-    shareCanvas: () => void;
+    shareCanvas: () => Promise<string>;
   } | null>;
   coordinates: { x: number; y: number };
 }
@@ -32,7 +31,7 @@ export default function Controls({ onResetView, selectedColor, onColorSelect, fl
   }, []);
 
   return (
-    <div className="mb-2 sm:mb-4 flex flex-col gap-2 sm:gap-4 w-full max-w-[600px]">
+    <div className="mb-3 sm:mb-4 flex flex-col gap-2 sm:gap-4 w-full max-w-[600px]">
       {flashMessage && (
         <div className="flex justify-center">
           <div className="font-mono text-[#FFD700] text-xs sm:text-sm">
@@ -47,10 +46,9 @@ export default function Controls({ onResetView, selectedColor, onColorSelect, fl
         >
           Reset View
         </button>
-        <ShareCanvas />
         <ShareCanvasV2 canvasRef={canvasRef} />
       </div>
-      <div className="w-full">
+      <div className="w-full mb-1 sm:mb-2">
         <SideColorPicker 
           selectedColor={selectedColor}
           onColorSelect={onColorSelect}

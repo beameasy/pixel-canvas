@@ -1,47 +1,79 @@
 import { NextResponse } from 'next/server';
-import { redis } from '@/lib/server/redis';
+import { redis, getQueueName } from '@/lib/server/redis';
 import { getAccessToken } from '@privy-io/react-auth';
 import { getAdminClient } from '../_lib/supabaseAdmin';
 import { authenticateUser } from '../_lib/authenticateUser';
-import { getFarcasterUser } from '@/lib/farcaster';
+import { getFarcasterUser } from '../../../components/farcaster/api/getFarcasterUser';
 import { getBillboardBalance, getTokensNeededForUsdAmount } from '@/app/api/_lib/subgraphClient';
 import { pusher } from '@/lib/server/pusher';
 import { v4 as uuidv4 } from 'uuid';
+import { getUserTier, canOverwritePixel, canPlacePixel, getCooldownInfo, updateCooldownTimestamp, checkAndUpdateCooldown } from '@/lib/server/tokenTiers';
+import { DEFAULT_TIER } from '@/lib/server/tiers.config';
+import { queueDatabaseWrite, triggerQueueProcessing as queueProcessor } from '@/lib/queue';
+import { scanHash, getUserData } from '@/lib/server/redisUtils';
 
 const ONE_HOUR = 60 * 60 * 1000; // 1 hour in milliseconds
+
+// Increase cache time for initial load
+export const revalidate = 30; // 30 seconds instead of 5
+
+const isDev = process.env.NODE_ENV === 'development';
+
+const GRID_SIZE = 400; // Match client-side GRID_SIZE
+const VALID_COLORS = [
+  '#000000', // Black
+  '#ff4500', // Red
+  '#be0039', // Dark Red
+  '#ff3881', // Pink
+  '#ff99aa', // Light Pink
+  '#ffa800', // Orange
+  '#ffd635', // Yellow
+  '#fff8b8', // Cream
+  '#00cc78', // Green
+  '#7eed56', // Light Green
+  '#00ccc0', // Teal
+  '#3690ea', // Blue
+  '#0052FF', // Coinbase Blue
+  '#51e9f4', // Light Blue
+  '#493ac1', // Purple
+  '#811e9f', // Deep Purple
+  '#b44ac0', // Magenta
+  '#6d482f', // Brown
+  '#515252', // Dark Gray
+  '#ffffff'  // White
+];
 
 // Get canvas state
 export async function GET() {
   try {
-    console.log('🔵 Fetching canvas state');
+    const pixels = await scanHash('canvas:pixels');
     
-    // Check Redis connection
-    const isConnected = await redis.ping();
-    console.log('🔵 Redis connection:', isConnected);
+    // Ensure we return an empty array if no pixels found
+    if (!pixels || Object.keys(pixels).length === 0) return NextResponse.json([], {
+      headers: {
+        'Cache-Control': 'public, max-age=5, stale-while-revalidate=10'
+      }
+    });
     
-    // Check if key exists first
-    const exists = await redis.exists('canvas:pixels');
-    console.log('🔵 Canvas pixels exists:', exists);
-    
-    // Get pixels from Redis with explicit type check
-    const pixels = exists ? await redis.hgetall('canvas:pixels') : {};
-    console.log('🔵 Raw Redis response:', pixels);
-    
-    // Convert to array safely
-    const pixelsArray = Object.entries(pixels || {}).map(([key, value]) => {
-      const [x, y] = key.split(',');
-      const pixelData = typeof value === 'string' ? JSON.parse(value) : value;
-      return {
-        ...pixelData,
-        x: parseInt(x),
-        y: parseInt(y)
-      };
+    // Convert hash to array format
+    const pixelsArray = Object.entries(pixels).map(([key, value]) => {
+      const [x, y] = key.split(',').map(Number);
+      const data = typeof value === 'string' ? JSON.parse(value) : value;
+      return { x, y, ...data };
     });
 
-    return NextResponse.json(pixelsArray);
+    return NextResponse.json(pixelsArray, {
+      headers: {
+        'Cache-Control': 'public, max-age=5, stale-while-revalidate=10'
+      }
+    });
   } catch (error) {
-    console.error('❌ Error fetching pixels:', error);
-    return NextResponse.json([], { status: 200 }); // Return empty array with 200
+    console.error('Error fetching pixels:', error);
+    return NextResponse.json([], {
+      headers: {
+        'Cache-Control': 'no-store'
+      }
+    });
   }
 }
 
@@ -51,6 +83,7 @@ interface PixelMetadata {
   token_balance: number;
   locked_until?: number;
   placed_at: number;
+  version: number;  // Change version to required field for concurrency control
 }
 
 // Add price calculation functions
@@ -87,8 +120,27 @@ async function getPixelMetadata(x: number, y: number): Promise<PixelMetadata | n
   const data = await redis.hget('canvas:pixels:metadata', key);
   if (!data) return null;
   
-  // If it's a string, parse it, otherwise return as is
-  return typeof data === 'string' ? JSON.parse(data) : data;
+  // Parse the data and ensure it matches the PixelMetadata interface
+  const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+  
+  // Validate that the parsed data has all required fields
+  if (
+    typeof parsed.wallet_address === 'string' &&
+    typeof parsed.token_balance === 'number' &&
+    typeof parsed.placed_at === 'number' &&
+    typeof parsed.version === 'number'
+  ) {
+    return {
+      wallet_address: parsed.wallet_address,
+      token_balance: parsed.token_balance,
+      placed_at: parsed.placed_at,
+      version: parsed.version,
+      locked_until: parsed.locked_until
+    };
+  }
+  
+  // If validation fails, return null
+  return null;
 }
 
 async function setPixelMetadata(x: number, y: number, metadata: PixelMetadata): Promise<void> {
@@ -99,62 +151,57 @@ async function setPixelMetadata(x: number, y: number, metadata: PixelMetadata): 
 }
 
 // Add balance caching helper
-async function getTokenBalance(walletAddress: string): Promise<number> {
+async function getTokenBalance(walletAddress: string, session: any): Promise<number> {
   try {
-    const userData = await redis.hget('users', walletAddress);
+    // Use the utility function to get user data
+    const userData = await getUserData(walletAddress);
+    
     if (userData) {
-      console.log('🔵 Found cached user data:', userData);
-      return (typeof userData === 'string' ? JSON.parse(userData) : userData).token_balance || 0;
+      // Keep existing Privy ID if present
+      if (session?.privy_id && !userData.privy_id) {
+        const updatedUserData = {
+          ...userData,
+          privy_id: session.privy_id,
+          updated_at: new Date().toISOString()
+        };
+        
+        await redis.hset('users', {
+          [walletAddress]: JSON.stringify(updatedUserData)
+        });
+        
+        // Queue updated user data for Supabase
+        const usersQueue = getQueueName('supabase:users:queue');
+        await redis.rpush(usersQueue, JSON.stringify(updatedUserData));
+      }
+      return userData.token_balance || 0;
     }
   
     // If no cached data, fetch from chain and update user record
     const balance = Number(await getBillboardBalance(walletAddress));
     const farcasterUser = await getFarcasterUser(walletAddress);
     
-    console.log('🔵 Raw Farcaster user data:', farcasterUser);
-    
-    // Match the FarcasterUser interface field names
     const userDataToStore = {
       wallet_address: walletAddress,
       token_balance: balance,
       farcaster_username: farcasterUser?.farcaster_username || null,
       farcaster_pfp: farcasterUser?.farcaster_pfp || null,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      privy_id: session?.privy_id
     };
-
-    console.log('🔵 Storing user data:', userDataToStore);
     
     await redis.hset('users', {
       [walletAddress]: JSON.stringify(userDataToStore)
     });
+    
+    // Queue new user data for Supabase
+    const usersQueue = getQueueName('supabase:users:queue');
+    await redis.rpush(usersQueue, JSON.stringify(userDataToStore));
 
     return balance;
   } catch (error) {
-    console.error('❌ Error in getTokenBalance:', error);
+    console.error('Error in getTokenBalance:', error);
     return 0;
   }
-}
-
-// Add pixel placement rules
-async function canOverwritePixel(x: number, y: number, newWallet: string): Promise<boolean> {
-  const existingPixel = await redis.hget('canvas:pixels', `${x},${y}`);
-  if (!existingPixel) return true;
-  
-  const now = Date.now();
-  
-  // Check lock status
-  if ((existingPixel as any).locked_until && (existingPixel as any).locked_until > now) {
-    return false;
-  }
-  
-  // After 4 hours, anyone can overwrite
-  if (now - Date.parse((existingPixel as any).placed_at) > 4 * 60 * 60 * 1000) {
-    return true;
-  }
-  
-  // Check token balance using cache
-  const newBalance = await getTokenBalance(newWallet);
-  return newBalance >= (existingPixel as any).token_balance;
 }
 
 // Add locking functionality
@@ -175,231 +222,433 @@ async function lockPixel(x: number, y: number, wallet: string, duration: number)
 // Initialize empty lists if they don't exist
 async function initializeRedisKeys() {
   try {
-    const pixelsExists = await redis.exists('supabase:pixels:queue')
-    const usersExists = await redis.exists('supabase:users:queue')
+    const pixelsQueue = getQueueName('supabase:pixels:queue');
+    const usersQueue = getQueueName('supabase:users:queue');
+    
+    const pixelsExists = await redis.exists(pixelsQueue)
+    const usersExists = await redis.exists(usersQueue)
     
     // Just create empty lists - don't push empty arrays
-    if (!pixelsExists) await redis.del('supabase:pixels:queue')
-    if (!usersExists) await redis.del('supabase:users:queue')
+    if (!pixelsExists) await redis.del(pixelsQueue)
+    if (!usersExists) await redis.del(usersQueue)
   } catch (error) {
     console.error('Failed to initialize Redis keys:', error)
   }
 }
 
+// Helper function to get environment-specific processing flag key
+function getProcessingFlagKey() {
+  const isDev = process.env.NODE_ENV === 'development';
+  const prefix = isDev ? 'dev:' : '';
+  return `${prefix}queue_processing_active`;
+}
+
 // Helper function with retries
-async function triggerQueueProcessing(retries = 3) {
+async function legacyTriggerQueueProcessing(retries = 3) {
   try {
-    const response = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/cron/process-queue`, {
-      method: 'POST',
-      headers: { 
-        'x-cron-secret': process.env.CRON_SECRET || '',
-        'origin': process.env.NEXT_PUBLIC_APP_URL || ''
+    // For serverless environments, we can directly call the cron API without making a fetch request
+    // This avoids the issue with localhost URLs in serverless environments
+    
+    // Call the queue processing directly instead of making a fetch request
+    // Import the process-queue GET handler and call it directly
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || '';
+    
+    // Only make a network request if we're NOT in a serverless environment (determined by checking for localhost)
+    // In production serverless environments, we'll skip this fetch
+    if (appUrl.includes('localhost') || appUrl.includes('127.0.0.1')) {
+      // Local development - use fetch
+      const response = await fetch(`${appUrl}/api/cron/process-queue`, {
+        method: 'POST',
+        headers: {
+          'x-cron-secret': process.env.CRON_SECRET || '',
+          'origin': appUrl
+        }
+      });
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    } else {
+      // In production - use the queue flag method instead of fetch
+      // Just set a flag that the vercel cron job will pick up
+      // This avoids the need to make a self-request which doesn't work in serverless
+      console.log('Using queue flag method for serverless environment');
+      const queueReady = (await redis.llen(getQueueName('supabase:pixels:queue'))) > 0;
+      
+      if (queueReady) {
+        // No need to make a network request - just ensure the processing flag is not set
+        // so the cron job will process it on next run
+        const processingFlagKey = getProcessingFlagKey();
+        const processingActive = await redis.get(processingFlagKey);
+        
+        if (!processingActive) {
+          console.log('Queue ready, cron job will process on next run');
+        } else {
+          console.log('Queue processing already active');
+        }
+      } else {
+        console.log('No items in queue');
       }
-    });
-    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    }
   } catch (error) {
     console.error('Queue trigger failed:', error);
     if (retries > 0) {
       await new Promise(resolve => setTimeout(resolve, 2000));
-      return triggerQueueProcessing(retries - 1);
+      return legacyTriggerQueueProcessing(retries - 1);
     }
   }
 }
 
-// Modify POST endpoint
 export async function POST(request: Request) {
   try {
-    await initializeRedisKeys()
-
     const session = await authenticateUser(request);
-    if (!session) {
-      return NextResponse.json({ error: 'Please connect your wallet to place pixels' }, { status: 401 });
+    if (!session || !session.wallet_address) {
+      return NextResponse.json({ error: 'Please connect a wallet to place pixels' }, { status: 401 });
     }
 
-    const { x, y, color, lockDuration } = await request.json();
     const walletAddress = session.wallet_address.toLowerCase();
-    
-    // Check if wallet is banned
+    const isAdmin = request.headers.get('x-is-admin') === 'true';
+
+    // Ban check
     const isBanned = await redis.sismember('banned:wallets:permanent', walletAddress);
     if (isBanned) {
-      console.log(`🚫 Blocked attempt from banned wallet: ${walletAddress}`);
-      return NextResponse.json({ error: 'Wallet is banned' }, { status: 403 });
+      return NextResponse.json({ error: 'Account banned, you probably deserved it.' }, { status: 403 });
     }
 
-    // Get cached user data with proper type checking
-    const cachedUserData = await redis.hget('users', walletAddress);
-    let userInfo = typeof cachedUserData === 'string' ? 
-      JSON.parse(cachedUserData) : 
-      (cachedUserData || null);
-
-    console.log('🔵 User data from Redis:', {
-      raw: cachedUserData,
-      type: typeof cachedUserData,
-      parsed: userInfo
-    });
-
-    // Only fetch new balance if last update was > 5 minutes ago
-    const FIVE_MINUTES = 5 * 60 * 1000;
+    // Get cached user data
+    const userData = await redis.hget('users', walletAddress);
+    const user = userData ? (typeof userData === 'string' ? JSON.parse(userData) : userData) : null;
     
-    // Add null check and default to current time if no previous update
-    const lastUpdated = userInfo?.updated_at 
-      ? new Date(userInfo.updated_at).getTime()
-      : Date.now() - FIVE_MINUTES - 1; // Force an update if no previous data
-    
-    const shouldUpdateBalance = Date.now() - lastUpdated > FIVE_MINUTES;
-
-    if (shouldUpdateBalance) {
-      const balance = Number(await getBillboardBalance(walletAddress));
+    // If balance is null, refresh it
+    let balance = user?.token_balance;
+    if (balance === null) {
+      balance = Number(await getBillboardBalance(walletAddress));
+      const updatedUserData = {
+        ...user,
+        token_balance: balance,
+        updated_at: new Date().toISOString()
+      };
       
-      // Update user data in Redis without JSON.stringify
       await redis.hset('users', {
-        [walletAddress]: JSON.stringify({
-          ...userInfo,
-          wallet_address: walletAddress,
-          token_balance: balance,
-          updated_at: new Date().toISOString()
-        })
+        [walletAddress]: JSON.stringify(updatedUserData)
       });
       
-      userInfo.token_balance = balance;
+      // Queue updated user data for Supabase
+      const usersQueue = getQueueName('supabase:users:queue');
+      await redis.rpush(usersQueue, JSON.stringify(updatedUserData));
     }
 
-    // Create pixel data using cached user info
+    // Atomic cooldown check and update (skip for admins)
+    if (!isAdmin) {
+      // Use our new atomic function to check and update cooldown in one operation
+      const cooldownInfo = await checkAndUpdateCooldown(walletAddress);
+      
+      if (!cooldownInfo.canPlace) {
+        return NextResponse.json({ 
+          error: `Please wait ${cooldownInfo.remainingSeconds} seconds`,
+          cooldownInfo: {
+            tier: cooldownInfo.tier.name,
+            cooldownSeconds: cooldownInfo.cooldownSeconds,
+            remainingSeconds: cooldownInfo.remainingSeconds,
+            nextPlacementTime: cooldownInfo.nextPlacementTime
+          }
+        }, { status: 429 });
+      }
+      
+      console.log(`🔵 User ${walletAddress} with balance ${balance} has tier: ${cooldownInfo.tier.name} with cooldown: ${cooldownInfo.cooldownSeconds}s`);
+    }
+
+    const { x, y, color, version } = await request.json();
+
+    // Validate coordinates
+    if (!Number.isInteger(x) || !Number.isInteger(y) || 
+        x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) {
+      return NextResponse.json({ 
+        error: 'Invalid coordinates' 
+      }, { status: 400 });
+    }
+
+    // Validate color
+    if (!VALID_COLORS.includes(color)) {
+      return NextResponse.json({ 
+        error: 'Invalid color' 
+      }, { status: 400 });
+    }
+
+    // Get existing pixel data for version check
+    const existingPixel = await redis.hget('canvas:pixels', `${x},${y}`);
+    const existingPixelData = existingPixel ? 
+      (typeof existingPixel === 'string' ? JSON.parse(existingPixel) : existingPixel) 
+      : null;
+    
+    // Enhanced version conflict check
+    if (existingPixelData?.version) {
+      // If client version is undefined or doesn't match the current version
+      if (version === undefined || version !== existingPixelData.version) {
+        console.log(`🔄 Version conflict detected: Client version ${version}, Server version ${existingPixelData.version}`);
+        return NextResponse.json({ 
+          error: 'Pixel has been modified since you last viewed it', 
+          currentVersion: existingPixelData.version,
+          currentPixel: existingPixelData
+        }, { status: 409 });  // 409 Conflict
+      }
+    }
+
+    // Check if can overwrite
+    const overwriteCheck = await canOverwritePixel(walletAddress, existingPixelData);
+    if (!overwriteCheck.canOverwrite) {
+      return NextResponse.json({ 
+        error: overwriteCheck.message || 'Cannot overwrite this pixel',
+        hasLink: overwriteCheck.hasLink || false
+      }, { status: 403 });
+    }
+
+    // Current timestamp for consistency
+    const now = Date.now();
+    const isoNow = new Date().toISOString();
+    
+    // Calculate new version - increment if exists, otherwise start at 1
+    const newVersion = existingPixelData?.version ? existingPixelData.version + 1 : 1;
+
     const pixelData = {
-      id: uuidv4(),
+      id: `${x}-${y}-${now}`,
       x,
       y,
       color,
       wallet_address: walletAddress,
-      placed_at: new Date().toISOString(),
-      farcaster_username: userInfo.farcaster_username || null,
-      farcaster_pfp: userInfo.farcaster_pfp || null,
-      token_balance: userInfo.token_balance,
-      locked_until: lockDuration ? Date.now() + Math.min(lockDuration, 4 * 60 * 60 * 1000) : undefined
+      placed_at: isoNow,
+      farcaster_username: user?.farcaster_username,
+      farcaster_pfp: user?.farcaster_pfp,
+      version: newVersion  // Add version number for concurrency control
     };
 
-    console.log('🔵 Storing pixel data:', pixelData);
-
-    // Store pixel in Redis
-    await redis.hset('canvas:pixels', {
+    // Use environment-specific queue names
+    const pixelsQueue = getQueueName('supabase:pixels:queue');
+    
+    // Queue the pixel data for Supabase storage
+    const multi = redis.multi();
+    multi.hset('canvas:pixels', {
       [`${x},${y}`]: JSON.stringify(pixelData)
     });
-
-    // Add to history with timestamp score
-    await redis.zadd('canvas:history', {
-      score: Date.now(),
+    
+    multi.zadd('canvas:history', {
+      score: now,
       member: JSON.stringify(pixelData)
     });
+    
+    multi.rpush(pixelsQueue, JSON.stringify(pixelData));
+    
+    multi.set(`user:${walletAddress}:balance_changed`, "true", {ex: 60});
+    
+    await multi.exec();
 
-    // Get pixels from the last hour
-    const recentPixels = await redis.zrange(
-      'canvas:history',
-      Date.now() - ONE_HOUR,
-      Date.now(),
-      {
-        byScore: true
-      }
-    );
+    // Get queue lengths
+    const pixelQueueLength = await redis.llen(pixelsQueue);
+    const userQueueLength = await redis.llen(getQueueName('supabase:users:queue'));
 
-    // Count pixels per user in the last hour
-    const recentCounts = recentPixels.reduce<Record<string, number>>((acc, pixelJson) => {
-      const pixel = typeof pixelJson === 'string' ? JSON.parse(pixelJson) : pixelJson;
-      const address = pixel.wallet_address;
-      acc[address] = (acc[address] || 0) + 1;
-      return acc;
-    }, {});
-
-    // Get user data for recent participants
-    const users = await redis.hgetall('users') || {};
-
-    // Calculate top users from recent activity
-    const topUsers = Object.entries(recentCounts)
-      .map(([address, count]) => {
-        const userData = users[address];
-        const parsedUserData = typeof userData === 'string' ? 
-          JSON.parse(userData) : 
-          (userData || {});
-        
-        return {
-          wallet_address: address,
-          count,
-          farcaster_username: parsedUserData.farcaster_username || null,
-          farcaster_pfp: parsedUserData.farcaster_pfp || null
-        };
-      })
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
-    console.log('🔵 Emitting top users (last hour):', topUsers);
-
-    // Emit through Pusher with complete data
-    await pusher.trigger('canvas', 'pixel-placed', {
-      pixel: pixelData,
-      topUsers
+    // Log queue stats
+    console.log('📊 Queue stats:', {
+      pixelQueueLength,
+      userQueueLength,
+      hasCronSecret: !!process.env.CRON_SECRET
     });
-
-    // Queue pixel data
-    await redis.rpush('supabase:pixels:queue', JSON.stringify(pixelData))
-
-    // Before queueing user data
-    const userQueueType = await redis.type('supabase:users:queue')
-    if (userQueueType !== 'list') {
-      await redis.del('supabase:users:queue')
+    
+    // If queue has many items, trigger processing
+    if ((pixelQueueLength >= 100 || userQueueLength >= 50) && process.env.CRON_SECRET) {
+      console.log('📊 Queue threshold reached, triggering immediate processing');
+      queueProcessor().catch(err => {
+        console.error('Failed to trigger queue processing:', err);
+      });
     }
 
-    // Now queue the user data
-    await redis.rpush('supabase:users:queue', JSON.stringify(userInfo))
+    // Only send the immediate pixel update via Pusher
+    try {
+      // Get recent history for top users calculation
+      const now = Date.now();
+      const oneHourAgo = now - (60 * 60 * 1000);
+      const oneDayAgo = now - (24 * 60 * 60 * 1000);
+      
+      // Get recent history using scores to limit data size
+      const recentHistory = await redis.zrange(
+        'canvas:history',
+        oneHourAgo,
+        now,
+        { byScore: true }
+      );
 
-    // Log queue lengths
-    console.log('🔵 Queue lengths:', {
-      pixels: await redis.llen('supabase:pixels:queue'),
-      users: await redis.llen('supabase:users:queue')
-    })
+      // Process pixels to count user activity
+      const userCounts = new Map<string, {
+        wallet_address: string;
+        count: number;
+        farcaster_username: string | null;
+        farcaster_pfp: string | null;
+      }>();
 
-    // In your pixel placement handler
-    // Use SETNX for atomic operation
-    const processingSet = await redis.set('queue_processing_active', 'true', { 
-      nx: true,  // Only set if not exists
-      ex: 300    // Safety expiry
-    });
+      // Process each pixel placement for last hour
+      for (const entry of recentHistory) {
+        const pixel = typeof entry === 'string' ? JSON.parse(entry) : entry;
+        const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
+        
+        if (!wallet_address) continue;
 
-    if (processingSet) {
-      await triggerQueueProcessing();
+        const key = wallet_address.toLowerCase();
+        const existing = userCounts.get(key);
+        
+        if (existing) {
+          existing.count++;
+          // Update Farcaster info if available
+          if (farcaster_username && !existing.farcaster_username) {
+            existing.farcaster_username = farcaster_username;
+          }
+          if (farcaster_pfp && !existing.farcaster_pfp) {
+            existing.farcaster_pfp = farcaster_pfp;
+          }
+        } else {
+          userCounts.set(key, {
+            wallet_address,
+            count: 1,
+            farcaster_username: farcaster_username || null,
+            farcaster_pfp: farcaster_pfp || null
+          });
+        }
+      }
+
+      // Get 24h history
+      const dayHistory = await redis.zrange(
+        'canvas:history',
+        oneDayAgo,
+        now,
+        { byScore: true }
+      );
+
+      // Process pixels to count 24h user activity
+      const userCounts24h = new Map<string, {
+        wallet_address: string;
+        count: number;
+        farcaster_username: string | null;
+        farcaster_pfp: string | null;
+      }>();
+
+      // Process each pixel placement for last 24 hours
+      for (const entry of dayHistory) {
+        const pixel = typeof entry === 'string' ? JSON.parse(entry) : entry;
+        const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
+        
+        if (!wallet_address) continue;
+
+        const key = wallet_address.toLowerCase();
+        const existing = userCounts24h.get(key);
+        
+        if (existing) {
+          existing.count++;
+          if (farcaster_username && !existing.farcaster_username) {
+            existing.farcaster_username = farcaster_username;
+          }
+          if (farcaster_pfp && !existing.farcaster_pfp) {
+            existing.farcaster_pfp = farcaster_pfp;
+          }
+        } else {
+          userCounts24h.set(key, {
+            wallet_address,
+            count: 1,
+            farcaster_username: farcaster_username || null,
+            farcaster_pfp: farcaster_pfp || null
+          });
+        }
+      }
+
+      // Convert to arrays and sort by count
+      const topUsers = Array.from(userCounts.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+      const topUsers24h = Array.from(userCounts24h.values())
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10);
+
+      // Send the Pusher event with all data
+      await pusher.trigger('canvas', 'pixel-placed', { 
+        pixel: pixelData,
+        topUsers,
+        topUsers24h
+      });
+    } catch (error) {
+      console.error('Failed to send Pusher event:', error);
     }
 
     return NextResponse.json({ 
-      success: true,
-      lockCost: lockDuration ? await calculateLockCost(lockDuration) : undefined
+      success: true, 
+      pixel: pixelData
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0'
+      }
     });
+
   } catch (error) {
     console.error('Error placing pixel:', error);
-    return NextResponse.json({ error: 'Failed to place pixel' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to place pixel' }, { 
+      status: 500,
+      headers: {
+        'Cache-Control': 'no-store'
+      }
+    });
   }
 }
 
 function calculateTopUsers(pixels: any[]) {
-  console.log('Server: Starting calculateTopUsers with', pixels.length, 'pixels');
-  
-  const userCounts = pixels.reduce<Record<string, any>>((acc, pixel) => {
-    const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
-    if (!acc[wallet_address]) {
-      acc[wallet_address] = {
-        wallet_address,
-        count: 0,
-        farcaster_username,
-        farcaster_pfp
-      };
-    }
-    acc[wallet_address].count++;
-    return acc;
-  }, {});
+  const now = Date.now();
+  const ONE_HOUR = 60 * 60 * 1000;
 
-  const topUsers = Object.values(userCounts)
+  // Filter pixels from last hour and count by user
+  const userCounts = pixels
+    .filter(pixel => {
+      const placedAt = new Date(pixel.placed_at).getTime();
+      return (now - placedAt) <= ONE_HOUR;
+    })
+    .reduce<Record<string, any>>((acc, pixel) => {
+      const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
+      if (!acc[wallet_address]) {
+        acc[wallet_address] = {
+          wallet_address,
+          count: 0,
+          farcaster_username,
+          farcaster_pfp
+        };
+      }
+      acc[wallet_address].count++;
+      return acc;
+    }, {});
+
+  return Object.values(userCounts)
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
+}
 
-  console.log('Server: Calculated topUsers:', JSON.stringify(topUsers, null, 2));
-  return topUsers;
+function calculateTopUsers24h(pixels: any[]) {
+  const now = Date.now();
+  const ONE_DAY = 24 * 60 * 60 * 1000;
+
+  // Filter pixels from last 24 hours and count by user
+  const userCounts = pixels
+    .filter(pixel => {
+      const placedAt = new Date(pixel.placed_at).getTime();
+      return (now - placedAt) <= ONE_DAY;
+    })
+    .reduce<Record<string, any>>((acc, pixel) => {
+      const { wallet_address, farcaster_username, farcaster_pfp } = pixel;
+      if (!acc[wallet_address]) {
+        acc[wallet_address] = {
+          wallet_address,
+          count: 0,
+          farcaster_username,
+          farcaster_pfp
+        };
+      }
+      acc[wallet_address].count++;
+      return acc;
+    }, {});
+
+  return Object.values(userCounts)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
 }
 
 async function calculateLockCost(duration: number): Promise<number> {
@@ -407,4 +656,60 @@ async function calculateLockCost(duration: number): Promise<number> {
   const baseUsdCost = 0.10; // 10 cents per hour
   const usdCost = baseUsdCost * hours * (1 + hours/4); // Quadratic increase
   return getTokensNeededForUsdAmount(usdCost);
-} 
+}
+
+// Add this function to calculate activity spikes
+async function calculateActivitySpikes() {
+  try {
+    // Define our activity windows
+    const windows = [
+      { minutes: 1, threshold: 10, intensity: 1 },
+      { minutes: 3, threshold: 30, intensity: 2 },
+      { minutes: 5, threshold: 60, intensity: 3 },
+      { minutes: 10, threshold: 100, intensity: 4 },
+      { minutes: 15, threshold: 200, intensity: 5 }
+    ];
+    
+    const now = Date.now();
+    const fifteenMinsAgo = now - (15 * 60 * 1000);
+    
+    // Get pixel history
+    const pixelHistory = await redis.zrange(
+      'canvas:history',
+      fifteenMinsAgo,
+      now,
+      { byScore: true }
+    );
+
+    const pixels = pixelHistory.map(p => 
+      typeof p === 'string' ? JSON.parse(p) : p
+    );
+    
+    // Calculate counts for each time window
+    const activitySpikes = windows.map(window => {
+      const windowStart = now - (window.minutes * 60 * 1000);
+      const count = pixels.filter(pixel => {
+        const pixelTime = new Date(pixel.placed_at).getTime();
+        return pixelTime >= windowStart;
+      }).length;
+      
+      if (count >= window.threshold) {
+        return {
+          count,
+          timeWindow: window.minutes,
+          intensity: window.intensity
+        };
+      }
+      return null;
+    }).filter(Boolean);
+    
+    // Sort by intensity
+    const nonNullSpikes = activitySpikes as NonNullable<typeof activitySpikes[0]>[];
+    nonNullSpikes.sort((a, b) => b.intensity - a.intensity);
+    
+    return nonNullSpikes.length > 0 ? [nonNullSpikes[0]] : [];
+  } catch (error) {
+    console.error('Error calculating activity spikes:', error);
+    return [];
+  }
+}

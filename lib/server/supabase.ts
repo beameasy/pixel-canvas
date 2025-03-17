@@ -13,4 +13,11 @@ export const supabase = createClient(
       autoRefreshToken: false,
     }
   }
-); 
+);
+
+// Add this function to determine table names based on environment
+export const getTableName = (baseTableName: string): string => {
+  const isDev = process.env.NODE_ENV === 'development';
+  const prefix = isDev ? 'dev_' : '';
+  return `${prefix}${baseTableName}`;
+}; 
