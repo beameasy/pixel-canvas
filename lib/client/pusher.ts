@@ -1,14 +1,42 @@
 import Pusher from 'pusher-js';
 
 // Add a DEBUG flag to control logging (should match with pusherManager.ts)
-const DEBUG = false; // Set to false to disable all logs
+const DEBUG = true; // Set to true temporarily for debugging
 
 // Enable Pusher logging only in development AND when DEBUG is true
 Pusher.logToConsole = DEBUG && process.env.NODE_ENV === 'development';
 
+// Determine environment
+const isDev = process.env.NODE_ENV === 'development';
+
+// Get environment-specific credentials
+const key = isDev ? process.env.NEXT_PUBLIC_PUSHER_KEY_DEV! : process.env.NEXT_PUBLIC_PUSHER_KEY_PROD!;
+const cluster = isDev ? process.env.NEXT_PUBLIC_PUSHER_CLUSTER_DEV! : process.env.NEXT_PUBLIC_PUSHER_CLUSTER_PROD!;
+
+// Log configuration
+if (DEBUG) {
+  console.log('🔵 Pusher Configuration:', {
+    environment: isDev ? 'development' : 'production',
+    key: key ? `${key.slice(0, 4)}...` : 'missing',
+    cluster,
+    hasDevKey: !!process.env.NEXT_PUBLIC_PUSHER_KEY_DEV,
+    hasProdKey: !!process.env.NEXT_PUBLIC_PUSHER_KEY_PROD
+  });
+}
+
+// Validate configuration
+if (!key || !cluster) {
+  console.error('❌ Missing Pusher configuration:', {
+    hasKey: !!key,
+    hasCluster: !!cluster,
+    env: process.env.NODE_ENV
+  });
+  throw new Error(`Missing Pusher configuration for ${isDev ? 'development' : 'production'}`);
+}
+
 // Create a single, persistent Pusher instance with improved settings
-const pusherClient = new Pusher(process.env.NEXT_PUBLIC_PUSHER_KEY!, {
-  cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER!,
+const pusherClient = new Pusher(key, {
+  cluster,
   forceTLS: true,
   enabledTransports: ['ws', 'wss'],
   activityTimeout: 120000,  // 2 minutes
@@ -64,9 +92,9 @@ pusherClient.connection.bind('state_change', (states: { current: string, previou
   }
 });
 
-// Log configuration once
+// Log initial state
 log('🔵 Pusher client initialized:', {
-  key: process.env.NEXT_PUBLIC_PUSHER_KEY?.slice(0, 4) + '...',
-  cluster: process.env.NEXT_PUBLIC_PUSHER_CLUSTER,
+  key: key.slice(0, 4) + '...',
+  cluster,
   state: pusherClient.connection.state
 }); 
