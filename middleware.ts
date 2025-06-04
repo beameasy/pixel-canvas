@@ -3,6 +3,7 @@ import type { NextRequest } from 'next/server'
 import { redis } from '@/lib/server/redis'
 import { jwtVerify, createRemoteJWKSet } from 'jose'
 import { z } from 'zod'
+import { getFarcasterUserByFid } from '@/components/farcaster/api/getFarcasterUserByFid'
 
 // Define public routes that don't need auth
 const PUBLIC_ROUTES = [
@@ -390,47 +391,53 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
   
   // For protected and admin routes, strengthen verification
   if (isProtectedRoute || isAdminRoute) {
-    const privyToken = req.headers.get('x-privy-token');
-    const walletAddress = req.headers.get('x-wallet-address')?.toLowerCase();
-    
-    if (!privyToken || !walletAddress) {
-      return NextResponse.json({ error: 'Unauthorized - Missing credentials' }, { status: 401 });
-    }
-    
-    // Validate Privy token
-    const privyId = await validatePrivyToken(privyToken);
-    if (!privyId) {
-      return NextResponse.json({ error: 'Unauthorized - Invalid token' }, { status: 401 });
-    }
-    
-    // For all API requests except profile creation, validate wallet ownership
-    if (pathname !== '/api/users/check-profile') {
-      const isValidWallet = await validateWalletOwnership(privyId, walletAddress);
-      if (!isValidWallet) {
-        console.log('🚨 Wallet ownership validation failed', {
-          wallet: walletAddress,
-          privyId: privyId
-        });
-        return NextResponse.json({ error: 'Unauthorized - Invalid wallet association' }, { status: 401 });
+    const farcasterFid = req.headers.get('x-farcaster-fid');
+    let privyId: string | null = null;
+    let walletAddress: string | null = null;
+
+    if (farcasterFid) {
+      const fidNum = parseInt(farcasterFid, 10);
+      if (isNaN(fidNum)) {
+        return NextResponse.json({ error: 'Unauthorized - Invalid Farcaster fid' }, { status: 401 });
+      }
+      const fcUser = await getFarcasterUserByFid(fidNum);
+      if (!fcUser) {
+        return NextResponse.json({ error: 'Unauthorized - Unknown Farcaster user' }, { status: 401 });
+      }
+      walletAddress = fcUser.custody_address.toLowerCase();
+      res.headers.set('x-farcaster-fid', String(fidNum));
+    } else {
+      const privyToken = req.headers.get('x-privy-token');
+      walletAddress = req.headers.get('x-wallet-address')?.toLowerCase() || null;
+
+      if (!privyToken || !walletAddress) {
+        return NextResponse.json({ error: 'Unauthorized - Missing credentials' }, { status: 401 });
+      }
+
+      privyId = await validatePrivyToken(privyToken);
+      if (!privyId) {
+        return NextResponse.json({ error: 'Unauthorized - Invalid token' }, { status: 401 });
+      }
+
+      if (pathname !== '/api/users/check-profile') {
+        const isValidWallet = await validateWalletOwnership(privyId, walletAddress);
+        if (!isValidWallet) {
+          console.log('🚨 Wallet ownership validation failed', { wallet: walletAddress, privyId });
+          return NextResponse.json({ error: 'Unauthorized - Invalid wallet association' }, { status: 401 });
+        }
       }
     }
     
     // For high-value operations, also verify signature
-    const isHighValueOperation = 
-      (pathname === '/api/pixels' && method === 'POST') || 
+    const isHighValueOperation =
+      (pathname === '/api/pixels' && method === 'POST') ||
       pathname.includes('/api/users/ban') ||
       pathname.includes('/api/admin/');
-      
-    if (isHighValueOperation) {
+
+    if (isHighValueOperation && privyId) {
       const hasValidSignature = await verifyWalletSignature(req, walletAddress);
       if (!hasValidSignature) {
-        // For now, log warning but don't block - this can be enabled after client updates
-        console.log('⚠️ No valid signature for high-value operation', { 
-          pathname,
-          wallet: walletAddress
-        });
-        // In the future, uncomment the following line to enforce signatures
-        // return NextResponse.json({ error: 'Unauthorized - Signature required', needs_signature: true }, { status: 401 });
+        console.log('⚠️ No valid signature for high-value operation', { pathname, wallet: walletAddress });
       }
     }
 
@@ -438,8 +445,7 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     // If this is a check-profile request, allow it to proceed with verified token
     // but without requiring an existing user profile
     if (pathname === '/api/users/check-profile' && method === 'POST') {
-      // Add validated data to headers for profile creation
-      res.headers.set('x-privy-id', privyId);
+      if (privyId) res.headers.set('x-privy-id', privyId);
       res.headers.set('x-verified-wallet', walletAddress);
       res.headers.set('x-wallet-verified-at', Date.now().toString());
       return res;
@@ -452,16 +458,13 @@ export async function middleware(req: NextRequest): Promise<NextResponse> {
     }
 
     const parsedData = typeof userData === 'string' ? JSON.parse(userData) : userData;
-    if (parsedData.privy_id !== privyId) {
-      console.log('🚨 Attempted wallet address spoofing', {
-        wallet: walletAddress,
-        claimed_privy_id: privyId
-      });
+    if (privyId && parsedData.privy_id !== privyId) {
+      console.log('🚨 Attempted wallet address spoofing', { wallet: walletAddress, claimed_privy_id: privyId });
       return NextResponse.json({ error: 'Unauthorized - Invalid wallet' }, { status: 401 });
     }
 
     // Add validated data to headers
-    res.headers.set('x-privy-id', privyId);
+    if (privyId) res.headers.set('x-privy-id', privyId);
     res.headers.set('x-verified-wallet', walletAddress);
     // Add timestamp to indicate when verification happened
     res.headers.set('x-wallet-verified-at', Date.now().toString());

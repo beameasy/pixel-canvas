@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@ethersproject/bignumber": "^5.7.0",
+    "@farcaster/frame-sdk": "^0.0.57",
     "@neynar/nodejs-sdk": "^2.9.0",
     "@privy-io/react-auth": "^2.4.2",
     "@privy-io/server-auth": "^1.18.7",

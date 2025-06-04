@@ -13,6 +13,8 @@ import { pusherManager } from '@/lib/client/pusherManager';
 import Head from 'next/head';
 import { useBanStatus } from '@/lib/hooks/useBanStatus';
 import { CONFIG_VERSION } from '@/lib/server/tiers.config';
+import { useFarcasterMiniApp } from '@/components/farcaster/hooks/useFarcasterMiniApp';
+import { useFarcasterSession } from '@/components/farcaster/hooks/useFarcasterSession';
 
 // Add conditional logging utility
 const isDev = process.env.NODE_ENV === 'development';
@@ -31,6 +33,24 @@ const logger = {
 export default function Home() {
   const { authenticated, user, getAccessToken, login } = usePrivy();
   const { isBanned, banReason } = useBanStatus();
+  const { isMiniApp } = useFarcasterMiniApp();
+  const { session: farcasterSession } = useFarcasterSession();
+  const isAuthenticated = authenticated || !!farcasterSession;
+
+  const fcFrame = JSON.stringify({
+    version: '1',
+    imageUrl: 'https://www.billboardonbase.xyz/og-image.png',
+    button: {
+      title: 'Open Canvas',
+      action: {
+        type: 'launch_frame',
+        name: 'Billboard Canvas',
+        url: 'https://www.billboardonbase.xyz',
+        splashImageUrl: 'https://www.billboardonbase.xyz/farcaster-icon.svg',
+        splashBackgroundColor: '#855DCD',
+      },
+    },
+  });
   
   // Group related UI states together
   const [uiState, setUiState] = useState({
@@ -88,6 +108,13 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, []);
 
+  // Log when running inside the Warpcast mini app
+  useEffect(() => {
+    if (isMiniApp) {
+      logger.log('\ud83d\udcf1 Running inside Warpcast mini app');
+    }
+  }, [isMiniApp]);
+
   // Save a reference to the canvas view state when unmounting
   useEffect(() => {
     return () => {
@@ -134,42 +161,39 @@ export default function Home() {
           return;
         }
 
-        const token = await getAccessToken();
-        if (!token) {
+        const token = isMiniApp ? null : await getAccessToken();
+        if (!isMiniApp && !token) {
           logger.log("No authentication token available");
           return;
         }
 
-        if (!user || !user.wallet) {
+        const walletAddress = farcasterSession?.custodyAddress || user?.wallet?.address;
+        if (!walletAddress) {
           logger.log("User or wallet not available yet");
           return;
         }
-
-        const walletAddress = user.wallet.address;
         
         // First attempt without signature
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "x-wallet-address": walletAddress
+        };
+        if (token) headers["x-privy-token"] = token;
+        if (farcasterSession) headers["x-farcaster-fid"] = String(farcasterSession.fid);
+
         let response = await fetch("/api/users/check-profile", {
           method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-wallet-address": walletAddress,
-            "x-privy-token": token
-          }
+          headers
         });
 
-        // Handle token expiration with refresh
-        if (response.status === 401) {
+        if (!isMiniApp && response.status === 401) {
           logger.log("Authentication token expired or invalid, attempting to refresh");
-          
-          // Force token refresh via Privy
+
           try {
-            // Check Privy SDK documentation for correct refresh method
-            // Remove the non-standard { force: true } option if not supported
             const refreshedToken = await getAccessToken();
             if (refreshedToken) {
               logger.log("Token refreshed successfully, retrying request");
-              
-              // Retry with refreshed token
+
               response = await fetch("/api/users/check-profile", {
                 method: "POST",
                 headers: {
@@ -191,7 +215,7 @@ export default function Home() {
         }
         
         // If still unauthorized after token refresh, might need signature
-        if (response.status === 401) {
+        if (!isMiniApp && response.status === 401) {
           const errorData = await response.json();
           
           if (errorData.needs_signature) {
@@ -208,13 +232,16 @@ export default function Home() {
               logger.log("✅ Signature obtained for wallet verification");
               
               // Retry with signature
+              const signedHeaders: Record<string, string> = {
+                "Content-Type": "application/json",
+                "x-wallet-address": walletAddress,
+                "x-privy-token": token
+              };
+              if (farcasterSession) signedHeaders["x-farcaster-fid"] = String(farcasterSession.fid);
+
               response = await fetch("/api/users/check-profile", {
                 method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  "x-wallet-address": walletAddress,
-                  "x-privy-token": token
-                },
+                headers: signedHeaders,
                 body: JSON.stringify({
                   message,
                   signature
@@ -251,7 +278,7 @@ export default function Home() {
     return () => {
       // Cleanup if needed
     };
-  }, [authenticated, user?.wallet?.address, getAccessToken, isBanned]);
+  }, [isAuthenticated, user?.wallet?.address, farcasterSession?.custodyAddress, getAccessToken, isBanned]);
 
   // Add a helper for signing messages with proper error handling
   const signWalletMessage = async (message: string): Promise<string | null> => {
@@ -285,14 +312,15 @@ export default function Home() {
 
   // Function to add signatures to API requests
   const signRequest = async (url: string, method: string, body: any = {}): Promise<Response | null> => {
-    if (!user?.wallet?.address) {
+    const walletAddr = farcasterSession?.custodyAddress || user?.wallet?.address;
+    if (!walletAddr) {
       logger.error("Cannot sign request: wallet not available");
       handleAuthError();
       return null;
     }
-    
-    const token = await getAccessToken();
-    if (!token) {
+
+    const token = isMiniApp ? null : await getAccessToken();
+    if (!isMiniApp && !token) {
       logger.error("Cannot sign request: no authentication token");
       handleAuthError();
       return null;
@@ -305,16 +333,16 @@ export default function Home() {
     
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      "x-wallet-address": user.wallet.address,
-      "x-privy-token": token
+      "x-wallet-address": walletAddr
     };
+    if (token) headers["x-privy-token"] = token;
+    if (farcasterSession) headers["x-farcaster-fid"] = String(farcasterSession.fid);
     
-    // Add signature for high-value operations
-    if (isHighValueOperation) {
+    if (isHighValueOperation && !isMiniApp) {
       const timestamp = Date.now().toString();
       const message = `${method} ${url} ${JSON.stringify(body)}\nTimestamp: ${timestamp}`;
       const signature = await signWalletMessage(message);
-      
+
       if (signature) {
         headers["x-wallet-signature"] = signature;
         headers["x-signature-timestamp"] = timestamp;
@@ -362,7 +390,7 @@ export default function Home() {
     // Store the secure method for use in components that need it
     // without modifying the CanvasRef interface
     (window as any).securePixelPlacement = securePixelPlacement;
-  }, [user, authenticated]);
+  }, [user, farcasterSession, isAuthenticated]);
 
   // Add a component for the wallet connection modal
   const WalletConnectModal = () => {
@@ -453,6 +481,7 @@ export default function Home() {
         <meta property="og:image" content="https://www.billboardonbase.xyz/og-image.png" />
         <meta property="og:url" content="https://www.billboardonbase.xyz" />
         <meta name="twitter:card" content="summary_large_image" />
+        <meta name="fc:frame" content={fcFrame} />
       </Head>
       <div className="min-h-screen bg-slate-800 overflow-y-auto">
         <main className="w-full max-w-[1200px] mx-auto p-1 flex flex-col items-center gap-1 py-1 sm:gap-2 sm:py-2 pt-8">
@@ -465,7 +494,7 @@ export default function Home() {
           </div>
           
           <div className="flex flex-col items-center relative">
-            {!authenticated && uiState.showError && (
+            {!isAuthenticated && uiState.showError && (
               <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 z-50 w-full max-w-sm">
                 <div className="font-mono bg-slate-900/95 border border-yellow-500 text-yellow-400 text-sm px-4 py-3 rounded-lg shadow-lg animate-pulse flex flex-col">
                   <div className="flex items-center">
@@ -523,7 +552,7 @@ export default function Home() {
                 ref={canvasRef}
                 selectedColor={uiState.selectedColor}
                 onColorSelect={(color) => updateUiState({ selectedColor: color })}
-                authenticated={!!user}
+                authenticated={isAuthenticated}
                 onAuthError={handleAuthError}
                 onMousePosChange={(pos) => pos ? updateUiState({ mousePos: pos }) : updateUiState({ mousePos: { x: -1, y: -1 } })}
                 touchMode={uiState.touchMode}
@@ -537,7 +566,7 @@ export default function Home() {
           </div>
           
           {/* Add the wallet connection modal */}
-          {uiState.showWalletConnectModal && !authenticated && <WalletConnectModal />}
+          {uiState.showWalletConnectModal && !isAuthenticated && <WalletConnectModal />}
         </main>
       </div>
       
