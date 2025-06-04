@@ -1,0 +1,17 @@
+{
+  "accountAssociation": {
+    "header": "REPLACE_WITH_HEADER",
+    "payload": "REPLACE_WITH_PAYLOAD",
+    "signature": "REPLACE_WITH_SIGNATURE"
+  },
+  "frame": {
+    "version": "1",
+    "name": "Billboard Canvas",
+    "iconUrl": "/farcaster-icon.svg",
+    "homeUrl": "https://www.billboardonbase.xyz",
+    "imageUrl": "https://www.billboardonbase.xyz/og-image.png",
+    "buttonTitle": "Open Canvas",
+    "splashImageUrl": "/farcaster-icon.svg",
+    "splashBackgroundColor": "#855DCD"
+  }
+}

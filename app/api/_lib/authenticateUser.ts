@@ -12,9 +12,10 @@ export async function authenticateUser(request: Request): Promise<User | null> {
   try {
     // Get pre-validated Privy ID from middleware
     const privyId = request.headers.get('x-privy-id');
-    const claimedWalletAddress = request.headers.get('x-wallet-address')?.toLowerCase();
+    const farcasterFid = request.headers.get('x-farcaster-fid');
+    const claimedWalletAddress = request.headers.get('x-verified-wallet')?.toLowerCase();
 
-    if (!privyId || !claimedWalletAddress) {
+    if (!claimedWalletAddress || (!privyId && !farcasterFid)) {
       return null;
     }
 
@@ -26,8 +27,7 @@ export async function authenticateUser(request: Request): Promise<User | null> {
 
     const parsedData = typeof userData === 'string' ? JSON.parse(userData) : userData;
     
-    // Verify this wallet belongs to the authenticated Privy ID
-    if (parsedData.privy_id !== privyId) {
+    if (privyId && parsedData.privy_id !== privyId) {
       console.log('🚨 Wallet ownership mismatch', {
         wallet: claimedWalletAddress,
         claimed_privy_id: privyId,
@@ -40,7 +40,7 @@ export async function authenticateUser(request: Request): Promise<User | null> {
 
     return {
       wallet_address: claimedWalletAddress,
-      privy_id: privyId,
+      privy_id: privyId || undefined,
       farcaster_username: parsedData.farcaster_username || null,
       farcaster_pfp: parsedData.farcaster_pfp || null
     };
